@@ -4,8 +4,8 @@ import { db } from '../db/db'
 const CH_BREAK = /^(?:chapter|ch\.?|part|section|book)\s+(?:\d+|[ivxlcdm]+)[^\n]*/im
 
 function splitChapters(text) {
-  const lines = text.split('\n')
-  const breaks = [] // indices of lines that start a chapter
+  const lines  = text.split('\n')
+  const breaks = []
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
@@ -13,14 +13,13 @@ function splitChapters(text) {
   }
 
   if (breaks.length < 2) {
-    // No chapter structure — treat whole file as one chapter
     return [{ title: 'Chapter 1', text: text.trim() }]
   }
 
   return breaks.map((start, idx) => {
-    const end = breaks[idx + 1] ?? lines.length
+    const end     = breaks[idx + 1] ?? lines.length
     const headLine = lines[start].trim()
-    const body = lines.slice(start + 1, end).join('\n').trim()
+    const body    = lines.slice(start + 1, end).join('\n').trim()
     return { title: headLine || `Chapter ${idx + 1}`, text: body }
   }).filter(ch => ch.text.length > 80)
 }
@@ -35,12 +34,13 @@ async function parseTXT(file) {
 // ── PDF ──────────────────────────────────────────────────────────────────────
 async function parsePDF(file) {
   const pdfjs = await import('pdfjs-dist')
-  // Use jsDelivr CDN worker — matched to installed version, cached after first load
+
+  // Use unpkg CDN with .min.js (not .mjs) for broadest mobile browser support
   pdfjs.GlobalWorkerOptions.workerSrc =
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+    `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`
 
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
+  const pdf  = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
   const meta = await pdf.getMetadata().catch(() => ({}))
 
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
@@ -58,39 +58,48 @@ async function parsePDF(file) {
 
 // ── EPUB ─────────────────────────────────────────────────────────────────────
 async function parseEPUB(file) {
-  const { default: ePub } = await import('epubjs')
+  const epubMod = await import('epubjs')
+  // epub.js exports the constructor as default in ESM, but some bundled
+  // versions expose it as the module itself (CJS interop)
+  const ePub = epubMod.default ?? epubMod
 
-  const blob = new Blob([await file.arrayBuffer()], { type: 'application/epub+zip' })
-  const url  = URL.createObjectURL(blob)
+  if (typeof ePub !== 'function') {
+    throw new Error('epub.js failed to load — try a PDF or TXT instead')
+  }
 
-  const book = ePub(url)
+  // Pass ArrayBuffer directly — avoids createObjectURL which can fail on mobile
+  const arrayBuffer = await file.arrayBuffer()
+  const book = ePub(arrayBuffer)
   await book.ready
 
   const meta   = await book.loaded.metadata
   const title  = meta.title   || file.name.replace(/\.[^.]+$/, '')
   const author = meta.creator || 'Unknown'
 
+  // spine.spineItems is the raw array; spine.each() is a Backbone method
+  // that may not exist in all bundled environments
+  await book.spine.ready.catch(() => {})
+  const spineItems = book.spine.spineItems ?? book.spine.items ?? []
+
   const chapters = []
-  const items    = []
-  book.spine.each(item => items.push(item))
-
-  for (const item of items) {
-    const doc = await item.load(book.load.bind(book)).catch(() => null)
-    if (!doc) continue
-    const text = (doc.body || doc.documentElement)?.textContent
-      ?.replace(/\s+/g, ' ')
-      .trim()
-    if (!text || text.length < 80) continue
-    const heading = doc.querySelector('h1,h2,h3')?.textContent?.trim()
-    chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
+  for (const item of spineItems) {
+    try {
+      const doc = await item.load(book.load.bind(book))
+      if (!doc) continue
+      const body = doc.body ?? doc.documentElement
+      const text = body?.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+      if (text.length < 80) continue
+      const heading = doc.querySelector?.('h1,h2,h3')?.textContent?.trim()
+      chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
+    } catch { continue }
   }
-
-  URL.revokeObjectURL(url)
 
   return {
     title,
     author,
-    chapters: chapters.length ? chapters : [{ title: 'Chapter 1', text: 'Could not extract text from this EPUB.' }],
+    chapters: chapters.length
+      ? chapters
+      : [{ title: 'Chapter 1', text: 'Could not extract text from this EPUB.' }],
   }
 }
 
