@@ -216,6 +216,15 @@ export default function ProfileScreen() {
           <div className="pref-card">
             <div className="about-row"><span>Version</span><strong>0.1.0</strong></div>
             <div className="about-row"><span>Built by</span><strong>Neville — Apex Tech</strong></div>
+            {typeof window.__leavsInstall === 'function' && (
+              <div className="pref-row" style={{ cursor: 'pointer' }} onClick={() => window.__leavsInstall?.()}>
+                <div className="pref-ico pico-moss">
+                  <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+                </div>
+                <div className="pref-txt"><h4>Install app</h4><p>Add Leavs to your home screen</p></div>
+                <div className="pref-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>
+              </div>
+            )}
           </div>
         </div>
 

@@ -1968,6 +1968,46 @@ img { display: block; max-width: 100%; height: auto; }
   cursor: pointer;
 }
 
+/* ─── Update Banner ─────────────────────────────────────────────── */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--moss);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 100;
+  gap: 12px;
+}
+.update-banner__text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.update-banner__text svg { width: 15px; height: 15px; flex-shrink: 0; }
+.update-banner__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.update-banner__actions button {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1.5px solid rgba(255,255,255,0.4);
+  background: none;
+  color: #fff;
+  cursor: pointer;
+}
+.update-banner__apply {
+  background: #fff !important;
+  color: var(--moss) !important;
+  border-color: #fff !important;
+}
+
 /* ─── Offline Banner ────────────────────────────────────────────── */
 .offline-banner {
   display: flex;

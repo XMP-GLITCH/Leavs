@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import { useRegisterSW } from 'virtual:pwa-register/react'
 import LibraryScreen from './screens/LibraryScreen'
 import BookDetailScreen from './screens/BookDetailScreen'
 import ReaderScreen from './screens/ReaderScreen'
@@ -9,6 +10,7 @@ import StatsScreen from './screens/StatsScreen'
 import ProfileScreen from './screens/ProfileScreen'
 import BottomNav from './components/common/BottomNav'
 
+// ── Offline banner ────────────────────────────────────────────────────────────
 function OfflineBanner() {
   const [online, setOnline] = useState(navigator.onLine)
   useEffect(() => {
@@ -30,11 +32,86 @@ function OfflineBanner() {
   )
 }
 
+// ── Update banner ─────────────────────────────────────────────────────────────
+function UpdateBanner({ onUpdate, onDismiss }) {
+  return (
+    <div className="update-banner">
+      <div className="update-banner__text">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <polyline points="23 4 23 10 17 10" />
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+        </svg>
+        <span>Update available</span>
+      </div>
+      <div className="update-banner__actions">
+        <button onClick={onDismiss}>Later</button>
+        <button className="update-banner__apply" onClick={onUpdate}>Restart</button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
+  // ── PWA update logic ───────────────────────────────────────────────────────
+  const {
+    needRefresh: [needRefresh, setNeedRefresh],
+    updateServiceWorker,
+  } = useRegisterSW()
+
+  async function checkForUpdate(manual = false) {
+    if (!('serviceWorker' in navigator)) return
+    try {
+      const reg = await navigator.serviceWorker.getRegistration()
+      if (!reg) return
+      if (manual && reg.waiting) { setNeedRefresh(true); return }
+      await reg.update()
+      if (manual && reg.waiting) setNeedRefresh(true)
+    } catch {}
+  }
+
+  useEffect(() => {
+    const t  = setTimeout(() => checkForUpdate(), 2500)
+    const iv = setInterval(() => checkForUpdate(), 10 * 60 * 1000)
+    const onVisible = () => { if (document.visibilityState === 'visible') checkForUpdate() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      clearTimeout(t); clearInterval(iv)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [])
+
+  // ── Install prompt logic ───────────────────────────────────────────────────
+  const [installPrompt, setInstallPrompt] = useState(null)
+
+  useEffect(() => {
+    const handler = e => { e.preventDefault(); setInstallPrompt(e) }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  // Expose install handler globally so ProfileScreen can trigger it
+  useEffect(() => {
+    window.__leavsInstall = installPrompt
+      ? async () => {
+          installPrompt.prompt()
+          const { outcome } = await installPrompt.userChoice
+          if (outcome === 'accepted') setInstallPrompt(null)
+        }
+      : null
+  }, [installPrompt])
+
   return (
     <BrowserRouter>
       <div className="app-shell">
         <OfflineBanner />
+        {needRefresh && (
+          <UpdateBanner
+            onUpdate={() => updateServiceWorker(true)}
+            onDismiss={() => setNeedRefresh(false)}
+          />
+        )}
         <Routes>
           <Route path="/" element={<Navigate to="/library" replace />} />
           <Route path="/library" element={<LibraryScreen />} />
