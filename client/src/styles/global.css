@@ -874,6 +874,38 @@ img { display: block; max-width: 100%; height: auto; }
   z-index: 25;
 }
 
+.vocab-hdr {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.vocab-close-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--ink-ghost);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.vocab-close-btn svg { width: 15px; height: 15px; }
+
+.vocab-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vein-light);
+}
+
+.vs--hl { color: var(--ink-mid); }
+.vs--hl svg { stroke: var(--ink-mid) !important; }
+
 .vw {
   font-family: 'Playfair Display', serif;
   font-size: 19px;

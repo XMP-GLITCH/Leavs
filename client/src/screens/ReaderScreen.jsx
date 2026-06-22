@@ -458,27 +458,47 @@ export default function ReaderScreen() {
 
       {/* ── Vocab popup ── */}
       {vocabWord && !showHlPanel && (
-        <div className="vocab-pop" onClick={() => setVocabWord(null)}>
-          <div className="vw">{vocabWord}</div>
-          {vocabDef?.phonetic && <div className="vphon">{vocabDef.phonetic}</div>}
-          {vocabLoading && <div className="vd" style={{ opacity: 0.5 }}>Looking up…</div>}
-          {!vocabLoading && vocabDef && (
-            <>
-              {vocabDef.partOfSpeech && <div className="vpos">{vocabDef.partOfSpeech}</div>}
-              <div className="vd">{vocabDef.definition}</div>
-              {vocabDef.example && <div className="vex">"{vocabDef.example}"</div>}
-            </>
-          )}
-          {!vocabLoading && !vocabDef && <div className="vd" style={{ opacity: 0.5 }}>No definition found.</div>}
-          <div className="vs" onClick={async e => {
-            e.stopPropagation()
-            await db.vocabulary.add({ word: vocabWord, bookId, chapterId: chapterIndex, createdAt: Date.now() })
-            setVocabWord(null)
-          }}>
-            <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
-            Save to vocabulary
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 24 }} onClick={() => setVocabWord(null)} />
+          <div className="vocab-pop">
+            <div className="vocab-hdr">
+              <div className="vw">{vocabWord}</div>
+              <button className="vocab-close-btn" onClick={() => setVocabWord(null)} aria-label="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            {vocabDef?.phonetic && <div className="vphon">{vocabDef.phonetic}</div>}
+            {vocabLoading && <div className="vd" style={{ opacity: 0.5 }}>Looking up…</div>}
+            {!vocabLoading && vocabDef && (
+              <>
+                {vocabDef.partOfSpeech && <div className="vpos">{vocabDef.partOfSpeech}</div>}
+                <div className="vd">{vocabDef.definition}</div>
+                {vocabDef.example && <div className="vex">"{vocabDef.example}"</div>}
+              </>
+            )}
+            {!vocabLoading && !vocabDef && <div className="vd" style={{ opacity: 0.5 }}>No definition found.</div>}
+            <div className="vocab-actions">
+              <div className="vs" onClick={async () => {
+                await db.vocabulary.add({ word: vocabWord, bookId, chapterId: chapterIndex, createdAt: Date.now() })
+                setVocabWord(null)
+              }}>
+                <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
+                Save to vocabulary
+              </div>
+              <div className="vs vs--hl" onClick={() => {
+                const word = vocabWord
+                setVocabWord(null)
+                setSelectedText(word)
+                setShowHlPanel(true)
+              }}>
+                <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                Highlight
+              </div>
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* ── Audio player ── */}
