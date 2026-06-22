@@ -64,7 +64,7 @@ export default function ReaderScreen() {
   // ── Data ────────────────────────────────────────────────────────────────
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
   const chapter  = useLiveQuery(
-    () => db.chapters.where('[bookId+index]').equals([bookId, chapterIndex]).first(),
+    () => db.chapters.where('bookId').equals(bookId).filter(c => c.index === chapterIndex).first(),
     [bookId, chapterIndex],
   )
   const chapterCount = useLiveQuery(

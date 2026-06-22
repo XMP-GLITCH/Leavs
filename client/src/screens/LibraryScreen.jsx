@@ -144,11 +144,12 @@ export default function LibraryScreen() {
 
     try {
       setIngestState({ status: 'parsing', message: 'Reading file…' })
-      const bookId = await ingestFile(file, msg =>
+      const { bookId, hasCover } = await ingestFile(file, msg =>
         setIngestState({ status: 'parsing', message: msg })
       )
       setIngestState(null)
-      navigate(`/book/${bookId}/cover`)
+      // Skip cover picker if the file already contained a cover image
+      navigate(hasCover ? `/book/${bookId}` : `/book/${bookId}/cover`)
     } catch (err) {
       console.error('[ingest]', err)
       setIngestState({ status: 'error', message: err.message })

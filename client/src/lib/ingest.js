@@ -1,5 +1,5 @@
-import { db }    from '../db/db'
-import JSZip      from 'jszip'
+import { db }   from '../db/db'
+import JSZip     from 'jszip'
 
 // FileReader wrappers — file.arrayBuffer() and file.text() only landed in
 // Safari 14.1 (iOS 14.5). FileReader works all the way back to iOS 5.
@@ -19,6 +19,14 @@ function readText(file) {
     r.readAsText(file)
   })
 }
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload  = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(blob)
+  })
+}
 
 // ── Chapter detection ────────────────────────────────────────────────────────
 const CH_BREAK = /^(?:chapter|ch\.?|part|section|book)\s+(?:\d+|[ivxlcdm]+)[^\n]*/im
@@ -29,18 +37,27 @@ function splitChapters(text) {
   for (let i = 0; i < lines.length; i++) {
     if (CH_BREAK.test(lines[i].trim())) breaks.push(i)
   }
-  if (breaks.length < 2) return [{ title: 'Chapter 1', text: text.trim() }]
-  return breaks.map((start, idx) => {
+
+  if (breaks.length < 2) {
+    const body = text.trim()
+    return [{ title: 'Chapter 1', text: body || '[No readable text found in this file. It may be image-based or a scanned document.]' }]
+  }
+
+  const chunks = breaks.map((start, idx) => {
     const end  = breaks[idx + 1] ?? lines.length
     const body = lines.slice(start + 1, end).join('\n').trim()
     return { title: lines[start].trim() || `Chapter ${idx + 1}`, text: body }
   }).filter(ch => ch.text.length > 80)
+
+  return chunks.length
+    ? chunks
+    : [{ title: 'Chapter 1', text: text.trim() || '[No readable text found.]' }]
 }
 
 // ── TXT ──────────────────────────────────────────────────────────────────────
 async function parseTXT(file) {
   const text = await readText(file)
-  return { title: file.name.replace(/\.[^.]+$/, ''), author: 'Unknown', chapters: splitChapters(text) }
+  return { title: file.name.replace(/\.[^.]+$/, ''), author: 'Unknown', cover: null, chapters: splitChapters(text) }
 }
 
 // ── PDF ──────────────────────────────────────────────────────────────────────
@@ -80,14 +97,50 @@ async function parsePDF(file, onProgress) {
     } catch { pageTexts.push('') }
   }
 
-  return { title, author, chapters: splitChapters(pageTexts.join('\n\n')) }
+  return { title, author, cover: null, chapters: splitChapters(pageTexts.join('\n\n')) }
+}
+
+// ── EPUB cover extraction ─────────────────────────────────────────────────────
+async function extractEpubCover(zip, opfDoc, opfDir) {
+  let coverHref = null
+
+  // Method 1: <meta name="cover" content="manifest-item-id">
+  let coverId = null
+  for (const el of opfDoc.querySelectorAll('meta')) {
+    if (el.getAttribute('name') === 'cover') { coverId = el.getAttribute('content'); break }
+  }
+  if (coverId) {
+    for (const el of opfDoc.querySelectorAll('item')) {
+      if (el.getAttribute('id') === coverId) { coverHref = el.getAttribute('href'); break }
+    }
+  }
+
+  // Method 2: <item properties="cover-image ...">
+  if (!coverHref) {
+    for (const el of opfDoc.querySelectorAll('item')) {
+      const props = el.getAttribute('properties') || ''
+      if (props.includes('cover-image')) { coverHref = el.getAttribute('href'); break }
+    }
+  }
+
+  if (!coverHref) return null
+
+  try {
+    const fullPath = (opfDir + coverHref).replace(/\/\//g, '/')
+    const data = await zip.file(fullPath)?.async('uint8array')
+    if (!data) return null
+    const ext  = coverHref.split('.').pop().toLowerCase()
+    const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }[ext] ?? 'image/jpeg'
+    return await blobToDataUrl(new Blob([data], { type: mime }))
+  } catch {
+    return null
+  }
 }
 
 // ── EPUB — JSZip + DOMParser (no epub.js) ────────────────────────────────────
 async function parseEPUB(file, onProgress) {
   onProgress?.('Unzipping EPUB…')
 
-  // JSZip is statically imported — no dynamic import needed
   if (typeof JSZip?.loadAsync !== 'function')
     throw new Error(`Step[epub-jszip]: JSZip.loadAsync is ${typeof JSZip?.loadAsync}`)
 
@@ -123,18 +176,22 @@ async function parseEPUB(file, onProgress) {
   const author  = metaEl?.querySelector('creator')?.textContent?.trim() || 'Unknown'
 
   const opfDir  = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : ''
+
+  // 3. Extract cover image (before spine, so we always try even if spine fails)
+  const cover = await extractEpubCover(zip, opfDoc, opfDir).catch(() => null)
+
   const manifest = {}
-  opfDoc.querySelectorAll('manifest item').forEach(item => {
+  opfDoc.querySelectorAll('item').forEach(item => {
     manifest[item.getAttribute('id')] = item.getAttribute('href')
   })
 
-  const spineHrefs = [...opfDoc.querySelectorAll('spine itemref')]
+  const spineHrefs = [...opfDoc.querySelectorAll('itemref')]
     .map(ref => manifest[ref.getAttribute('idref')])
     .filter(Boolean)
 
   if (spineHrefs.length === 0) throw new Error('Step[epub-spine]: no spine items found')
 
-  // 3. Extract text from each spine file
+  // 4. Extract text from each spine file
   const chapters = []
   for (let i = 0; i < spineHrefs.length; i++) {
     if (i % 5 === 0) onProgress?.(`Reading chapter ${i + 1} of ${spineHrefs.length}…`)
@@ -154,9 +211,10 @@ async function parseEPUB(file, onProgress) {
   return {
     title,
     author,
+    cover,
     chapters: chapters.length
       ? chapters
-      : [{ title: 'Chapter 1', text: 'Could not extract text from this EPUB.' }],
+      : [{ title: 'Chapter 1', text: '[Could not extract text from this EPUB. It may be image-based or DRM-protected.]' }],
   }
 }
 
@@ -181,7 +239,6 @@ export async function ingestFile(file, onProgress) {
       else if (ext === 'txt')  parsed = await parseTXT(file)
       else throw new Error(`Unsupported format .${ext} — use PDF, EPUB or TXT`)
     } catch (e) {
-      // Re-throw; Step[…] prefix tells us exactly where it broke
       throw e
     }
 
@@ -192,6 +249,7 @@ export async function ingestFile(file, onProgress) {
       bookId = await db.books.add({
         title:        parsed.title,
         author:       parsed.author,
+        cover:        parsed.cover ?? null,
         progress:     0,
         mode:         'read',
         addedAt:      Date.now(),
@@ -201,19 +259,20 @@ export async function ingestFile(file, onProgress) {
 
     const total = parsed.chapters.length
     for (let i = 0; i < total; i++) {
+      const chapterText = parsed.chapters[i].text || '[No text content for this chapter.]'
       try {
         await db.chapters.add({
           bookId,
           index:       i,
           title:       parsed.chapters[i].title,
-          text:        parsed.chapters[i].text,
+          text:        chapterText,
           audioStatus: 'none',
         })
       } catch (e) { throw new Error(`Step[db-chapter-${i}]: ${e.message}`) }
       if (i % 5 === 0) onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
     }
 
-    return bookId
+    return { bookId, hasCover: !!parsed.cover }
   }
 
   return Promise.race([doIngest(), timeout])
