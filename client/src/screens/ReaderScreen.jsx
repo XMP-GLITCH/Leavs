@@ -40,7 +40,7 @@ export default function ReaderScreen() {
   const [vocabLoading,   setVocabLoading]   = useState(false)
   const [showHlPanel,    setShowHlPanel]    = useState(false)
   const [selectedText,   setSelectedText]   = useState('')
-  const [floatingHl,    setFloatingHl]     = useState(null)  // { text, x, y }
+  const [customSel,      setCustomSel]      = useState(null)  // { minWi, maxWi }
   const [noteText,       setNoteText]       = useState('')
   const [hlColor,        setHlColor]        = useState('hl-y')
 
@@ -62,6 +62,12 @@ export default function ReaderScreen() {
   const playerRef         = useRef(null)
   const scrollRestoredRef = useRef(false)
   const wordBoundariesRef = useRef([])
+  // Custom text-selection refs (avoid stale closures inside addEventListener)
+  const paraTokensRef  = useRef([])
+  const selAnchorRef   = useRef(null)
+  const customSelRef   = useRef(null)
+  const longPressRef   = useRef(null)
+  const touchStartRef  = useRef(null)
 
   // ── Data ────────────────────────────────────────────────────────────────
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
@@ -231,43 +237,99 @@ export default function ReaderScreen() {
     navigate(`/book/${id}/read?chapter=${idx}`)
   }
 
-  // ── Floating highlight button (selectionchange — works on iOS) ───────────
-  useEffect(() => {
-    function onSelectionChange() {
-      if (showHlPanel) return
-      const sel  = window.getSelection()
-      const text = sel?.toString().trim()
-      if (!text || text.length < 2 || !sel.rangeCount) { setFloatingHl(null); return }
-      // Only show for selections inside the reader body
-      const range    = sel.getRangeAt(0)
-      const readerEl = document.querySelector('.rdrbody')
-      if (!readerEl?.contains(range.commonAncestorContainer)) { setFloatingHl(null); return }
-      const rect = range.getBoundingClientRect()
-      setFloatingHl({
-        text,
-        x: Math.min(Math.max(rect.left + rect.width / 2, 60), window.innerWidth - 60),
-        y: Math.max(rect.top, 60),
-      })
-    }
-    document.addEventListener('selectionchange', onSelectionChange)
-    return () => document.removeEventListener('selectionchange', onSelectionChange)
-  }, [showHlPanel])
+  // Keep paraTokensRef and customSelRef in sync for use inside addEventListener
+  useEffect(() => { paraTokensRef.current = paragraphTokens }, [paragraphTokens])
+  useEffect(() => { customSelRef.current  = customSel       }, [customSel])
 
-  // ── Word tap handler (selection → floating button; tap → vocab) ──────────
-  function handleInteractionEnd(e) {
-    // If there's an active selection, the floating button handles it — do nothing
-    if (window.getSelection()?.toString().trim().length > 0) return
-    // Quick tap on a word span → vocab popup
+  // ── Custom long-press + drag selection (no native iOS blue highlight) ─────
+  useEffect(() => {
+    const el = document.querySelector('.rdrbody')
+    if (!el) return
+
+    function wiAt(x, y) {
+      const t = document.elementFromPoint(x, y)?.closest('[data-wi]')
+      return t ? Number(t.dataset.wi) : null
+    }
+
+    function onTouchStart(e) {
+      const touch = e.touches[0]
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY, t: Date.now() }
+      longPressRef.current  = setTimeout(() => {
+        const wi = wiAt(touch.clientX, touch.clientY)
+        if (wi == null) return
+        selAnchorRef.current = wi
+        setCustomSel({ minWi: wi, maxWi: wi })
+        customSelRef.current = { minWi: wi, maxWi: wi }
+        navigator.vibrate?.(25)
+      }, 480)
+    }
+
+    function onTouchMove(e) {
+      const touch = e.touches[0]
+      const start = touchStartRef.current
+      const moved = start && Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 10
+      if (moved && selAnchorRef.current == null) clearTimeout(longPressRef.current)
+      if (selAnchorRef.current == null) return
+      e.preventDefault()
+      const wi = wiAt(touch.clientX, touch.clientY)
+      if (wi == null) return
+      const a   = selAnchorRef.current
+      const sel = { minWi: Math.min(a, wi), maxWi: Math.max(a, wi) }
+      setCustomSel(sel)
+      customSelRef.current = sel
+    }
+
+    function onTouchEnd(e) {
+      clearTimeout(longPressRef.current)
+      if (selAnchorRef.current != null) return   // selection drag ended — user taps Highlight btn
+      const ct      = e.changedTouches[0]
+      const start   = touchStartRef.current
+      const elapsed = Date.now() - (start?.t ?? 0)
+      const moved   = start && Math.hypot(ct.clientX - start.x, ct.clientY - start.y) > 10
+      touchStartRef.current = null
+      // Quick tap while not in selection mode → open vocab
+      if (elapsed < 480 && !moved && !customSelRef.current) {
+        const wi = wiAt(ct.clientX, ct.clientY)
+        if (wi == null) return
+        for (const para of paraTokensRef.current) {
+          const tok = para.tokens.find(t => typeof t === 'object' && t.i === wi)
+          if (tok) { setVocabWord(tok.tok); setVocabPi(para.pi); break }
+        }
+      }
+    }
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true  })
+    el.addEventListener('touchmove',  onTouchMove,  { passive: false })
+    el.addEventListener('touchend',   onTouchEnd,   { passive: true  })
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove',  onTouchMove)
+      el.removeEventListener('touchend',   onTouchEnd)
+    }
+  }, [])   // stable setters + refs only — no deps needed
+
+  // Desktop: click on word → vocab (touch handled by addEventListener above)
+  function handleMouseUp(e) {
     const wordEl = e.target.closest?.('[data-wi]')
     if (!wordEl) return
-    const wi  = Number(wordEl.dataset.wi)
-    const tok = wordEl.textContent
-    let tapPi = null
+    const wi = Number(wordEl.dataset.wi)
     for (const para of paragraphTokens) {
-      if (para.tokens.some(t => typeof t === 'object' && t.i === wi)) { tapPi = para.pi; break }
+      const tok = para.tokens.find(t => typeof t === 'object' && t.i === wi)
+      if (tok) { setVocabWord(tok.tok); setVocabPi(para.pi); break }
     }
-    setVocabWord(tok)
-    setVocabPi(tapPi)
+  }
+
+  function getCustomSelText() {
+    if (!customSel || !chapter?.text) return ''
+    let s = Infinity, e = 0
+    for (const para of paragraphTokens) {
+      for (const t of para.tokens) {
+        if (typeof t !== 'object' || t.i < customSel.minWi || t.i > customSel.maxWi) continue
+        if (t.charStart < s) s = t.charStart
+        if (t.charEnd   > e) e = t.charEnd
+      }
+    }
+    return s < e ? chapter.text.slice(s, e).trim() : ''
   }
 
   async function saveHighlight() {
@@ -283,7 +345,9 @@ export default function ReaderScreen() {
     setShowHlPanel(false)
     setSelectedText('')
     setNoteText('')
-    setFloatingHl(null)
+    setCustomSel(null)
+    selAnchorRef.current = null
+    customSelRef.current = null
   }
 
   // ── Bookmark ─────────────────────────────────────────────────────────────
@@ -449,19 +513,20 @@ export default function ReaderScreen() {
       </header>
 
       {/* ── Reader body ── */}
-      <div className="rdrbody" style={{ fontSize: prefs.fontSize }} onMouseUp={handleInteractionEnd} onTouchEnd={handleInteractionEnd}>
+      <div className="rdrbody" style={{ fontSize: prefs.fontSize }} onMouseUp={handleMouseUp}>
         {paragraphTokens.length > 0
           ? paragraphTokens.map(({ pi, dropChar, tokens }) => (
               <p key={pi} className="rp">
                 {dropChar && <span className="dropcap">{dropChar}</span>}
                 {tokens.map((t, ti) => {
                   if (typeof t === 'string') return t
-                  const hlCls = getHlClass(t.charStart, t.charEnd)
+                  const hlCls  = getHlClass(t.charStart, t.charEnd)
+                  const inSel  = customSel && t.i >= customSel.minWi && t.i <= customSel.maxWi
                   return (
                     <span
                       key={ti}
                       data-wi={t.i}
-                      className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}`}
+                      className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}${inSel ? ' custom-sel' : ''}`}
                     >
                       {t.tok}
                     </span>
@@ -532,23 +597,22 @@ export default function ReaderScreen() {
         </>
       )}
 
-      {/* ── Floating highlight button (appears above active text selection) ── */}
-      {floatingHl && !showHlPanel && (
-        <div
-          className="floating-hl-btn"
-          style={{ left: floatingHl.x, top: floatingHl.y }}
-          onPointerDown={e => {
-            e.preventDefault()           // prevent clearing the selection on tap
-            const text = floatingHl.text
-            window.getSelection()?.removeAllRanges()
-            setFloatingHl(null)
-            setSelectedText(text)
-            setVocabWord(null)
-            setShowHlPanel(true)
-          }}
-        >
-          <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
-          Highlight
+      {/* ── Custom selection confirm bar ── */}
+      {customSel && !showHlPanel && (
+        <div className="sel-confirm-bar">
+          <button className="sel-cancel-btn" onPointerDown={e => {
+            e.preventDefault()
+            setCustomSel(null); selAnchorRef.current = null; customSelRef.current = null
+          }}>Cancel</button>
+          <button className="sel-hl-btn" onPointerDown={e => {
+            e.preventDefault()
+            const text = getCustomSelText()
+            setCustomSel(null); selAnchorRef.current = null; customSelRef.current = null
+            if (text) { setSelectedText(text); setVocabWord(null); setShowHlPanel(true) }
+          }}>
+            <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+            Highlight
+          </button>
         </div>
       )}
 
