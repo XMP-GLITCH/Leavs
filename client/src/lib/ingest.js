@@ -100,6 +100,45 @@ async function parsePDF(file, onProgress) {
   return { title, author, cover: null, chapters: splitChapters(pageTexts.join('\n\n')) }
 }
 
+// ── DOCX ─────────────────────────────────────────────────────────────────────
+async function parseDOCX(file, onProgress) {
+  onProgress?.('Unzipping document…')
+
+  let arrayBuffer
+  try { arrayBuffer = await readArrayBuffer(file) }
+  catch (e) { throw new Error(`Step[docx-read]: ${e.message}`) }
+
+  let zip
+  try { zip = await JSZip.loadAsync(arrayBuffer) }
+  catch (e) { throw new Error(`Step[docx-unzip]: ${e.message}`) }
+
+  let title  = file.name.replace(/\.[^.]+$/, '')
+  let author = 'Unknown'
+  try {
+    const coreXml = await zip.file('docProps/core.xml')?.async('text')
+    if (coreXml) {
+      const doc = new DOMParser().parseFromString(coreXml, 'text/xml')
+      title  = doc.querySelector('title')?.textContent?.trim()   || title
+      author = doc.querySelector('creator')?.textContent?.trim() || author
+    }
+  } catch { /* metadata optional */ }
+
+  let docXml
+  try { docXml = await zip.file('word/document.xml')?.async('text') }
+  catch (e) { throw new Error(`Step[docx-content]: ${e.message}`) }
+  if (!docXml) throw new Error('Step[docx-content]: word/document.xml not found — may not be a .docx file')
+
+  const rawTexts = [...docXml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1])
+  const fullText = rawTexts.join(' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ').trim()
+
+  if (!fullText || fullText.length < 20)
+    return { title, author, cover: null, chapters: [{ title: 'Document', text: '[Could not extract text from this document. It may be image-based or use unsupported formatting.]' }] }
+
+  return { title, author, cover: null, chapters: splitChapters(fullText) }
+}
+
 // ── PPTX ─────────────────────────────────────────────────────────────────────
 async function parsePPTX(file, onProgress) {
   onProgress?.('Unzipping presentation…')
@@ -142,7 +181,9 @@ async function parsePPTX(file, onProgress) {
       if (!xml) continue
       // Extract text runs via regex — avoids namespace issues across browsers
       const texts = [...xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => m[1]).filter(Boolean)
-      const text  = texts.join(' ').replace(/\s+/g, ' ').trim()
+      const text  = texts.join(' ')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ').trim()
       if (text.length < 3) continue
       chapters.push({ title: `Slide ${i + 1}`, text })
     } catch { continue }
@@ -303,7 +344,8 @@ export async function ingestFile(file, onProgress) {
       else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
       else if (ext === 'txt')  parsed = await parseTXT(file)
       else if (ext === 'pptx') parsed = await parsePPTX(file, onProgress)
-      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB, PPTX or TXT`)
+      else if (ext === 'docx') parsed = await parseDOCX(file, onProgress)
+      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB, DOCX, PPTX or TXT`)
     } catch (e) {
       throw e
     }

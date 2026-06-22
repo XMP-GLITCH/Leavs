@@ -21,7 +21,8 @@ function blobToDataUrl(blob) {
 
 // Extract a representative excerpt: beginning + middle + end of the full book text
 function buildExcerpt(chapters) {
-  const full = (chapters || []).map(c => c.text || '').filter(Boolean).join('\n\n')
+  // Filter out placeholder/error text (starts with '[') — these would generate nonsense covers
+  const full = (chapters || []).map(c => c.text || '').filter(t => t && !t.startsWith('[')).join('\n\n')
   const len  = full.length
   const start  = full.slice(0, 3000)
   const mid    = len > 7000 ? full.slice(Math.floor(len / 2) - 750, Math.floor(len / 2) + 750) : ''
@@ -101,7 +102,7 @@ export default function CoverPickerScreen() {
 
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
   const chapters = useLiveQuery(
-    () => db.chapters.where('bookId').equals(bookId).sortBy('order'),
+    () => db.chapters.where('bookId').equals(bookId).sortBy('index'),
     [bookId]
   )
 
