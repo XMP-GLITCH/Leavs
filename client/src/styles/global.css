@@ -5,6 +5,8 @@ html {
   -webkit-text-size-adjust: 100%;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  /* Suppress iOS long-press callout (Copy / Look Up / Translate menu) */
+  -webkit-touch-callout: none;
 }
 
 body {
@@ -13,7 +15,18 @@ body {
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Prevent text selection everywhere — re-enabled selectively in .rdrbody */
+  -webkit-user-select: none;
+  user-select: none;
 }
+
+/* Reader body: allow free-form text selection, custom highlight color */
+.rdrbody {
+  -webkit-user-select: text;
+  user-select: text;
+}
+::selection        { background: rgba(92, 138, 92, 0.35); color: inherit; }
+::-moz-selection   { background: rgba(92, 138, 92, 0.35); color: inherit; }
 
 #root { min-height: 100dvh; }
 
