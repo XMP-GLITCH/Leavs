@@ -230,15 +230,30 @@ export default function ReaderScreen() {
     navigate(`/book/${id}/read?chapter=${idx}`)
   }
 
-  // ── Text selection ───────────────────────────────────────────────────────
-  function handleSelectionEnd() {
-    const text = window.getSelection()?.toString().trim()
-    if (text && text.length > 1) {
-      setSelectedText(text)
+  // ── Unified tap / selection handler ─────────────────────────────────────
+  // • Selection exists → open highlight panel (any free-form selection)
+  // • No selection, tapped a word span → open vocab popup
+  function handleInteractionEnd(e) {
+    const sel = window.getSelection()?.toString().trim()
+    if (sel && sel.length > 1) {
+      window.getSelection()?.removeAllRanges()
+      setSelectedText(sel)
       setVocabWord(null)
       setVocabPi(null)
       setShowHlPanel(true)
+      return
     }
+    // No selection — was a word span tapped?
+    const wordEl = e.target.closest?.('[data-wi]')
+    if (!wordEl) return
+    const wi  = Number(wordEl.dataset.wi)
+    const tok = wordEl.textContent
+    let tapPi = null
+    for (const para of paragraphTokens) {
+      if (para.tokens.some(t => typeof t === 'object' && t.i === wi)) { tapPi = para.pi; break }
+    }
+    setVocabWord(tok)
+    setVocabPi(tapPi)
   }
 
   async function saveHighlight() {
@@ -419,7 +434,7 @@ export default function ReaderScreen() {
       </header>
 
       {/* ── Reader body ── */}
-      <div className="rdrbody" style={{ fontSize: prefs.fontSize }} onMouseUp={handleSelectionEnd} onTouchEnd={handleSelectionEnd}>
+      <div className="rdrbody" style={{ fontSize: prefs.fontSize }} onMouseUp={handleInteractionEnd} onTouchEnd={handleInteractionEnd}>
         {paragraphTokens.length > 0
           ? paragraphTokens.map(({ pi, dropChar, tokens }) => (
               <p key={pi} className="rp">
@@ -432,7 +447,6 @@ export default function ReaderScreen() {
                       key={ti}
                       data-wi={t.i}
                       className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}`}
-                      onClick={() => { setVocabWord(t.tok); setVocabPi(pi) }}
                     >
                       {t.tok}
                     </span>
@@ -487,7 +501,7 @@ export default function ReaderScreen() {
                 setVocabWord(null)
               }}>
                 <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
-                Save
+                Save to vocabulary
               </div>
               <div className="vs vs--hl" onClick={() => {
                 const word = vocabWord
@@ -496,23 +510,7 @@ export default function ReaderScreen() {
                 setShowHlPanel(true)
               }}>
                 <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
-                Word
-              </div>
-              <div className="vs vs--hl" onClick={() => {
-                const para = vocabPi != null ? paragraphTokens[vocabPi] : null
-                const wt   = (para?.tokens || []).filter(t => typeof t === 'object')
-                const text = wt.length
-                  ? chapter.text.slice(
-                      wt[0].charStart - (para.dropChar ? 1 : 0),
-                      wt[wt.length - 1].charEnd
-                    ).trim()
-                  : vocabWord
-                setVocabWord(null); setVocabPi(null)
-                setSelectedText(text)
-                setShowHlPanel(true)
-              }}>
-                <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /><line x1="4" y1="20" x2="20" y2="20" strokeWidth="2" /></svg>
-                Paragraph
+                Highlight
               </div>
             </div>
           </div>
