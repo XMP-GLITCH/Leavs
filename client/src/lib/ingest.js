@@ -7,23 +7,20 @@ function splitChapters(text) {
   const lines  = text.split('\n')
   const breaks = []
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim()
-    if (line && CH_BREAK.test(line)) breaks.push(i)
+    if (CH_BREAK.test(lines[i].trim())) breaks.push(i)
   }
   if (breaks.length < 2) return [{ title: 'Chapter 1', text: text.trim() }]
   return breaks.map((start, idx) => {
-    const end      = breaks[idx + 1] ?? lines.length
-    const headLine = lines[start].trim()
-    const body     = lines.slice(start + 1, end).join('\n').trim()
-    return { title: headLine || `Chapter ${idx + 1}`, text: body }
+    const end  = breaks[idx + 1] ?? lines.length
+    const body = lines.slice(start + 1, end).join('\n').trim()
+    return { title: lines[start].trim() || `Chapter ${idx + 1}`, text: body }
   }).filter(ch => ch.text.length > 80)
 }
 
 // ── TXT ──────────────────────────────────────────────────────────────────────
 async function parseTXT(file) {
   const text = await file.text()
-  const name = file.name.replace(/\.[^.]+$/, '')
-  return { title: name, author: 'Unknown', chapters: splitChapters(text) }
+  return { title: file.name.replace(/\.[^.]+$/, ''), author: 'Unknown', chapters: splitChapters(text) }
 }
 
 // ── PDF ──────────────────────────────────────────────────────────────────────
@@ -32,23 +29,22 @@ async function parsePDF(file, onProgress) {
 
   let pdfjsMod
   try { pdfjsMod = await import('pdfjs-dist') }
-  catch (e) { throw new Error(`Could not load PDF reader: ${e.message}`) }
+  catch (e) { throw new Error(`PDF reader failed to load: ${e.message}`) }
 
-  // pdfjs-dist v6 uses named exports; .default fallback handles bundler wrapping
   const pdfjs = pdfjsMod.default ?? pdfjsMod
-
   if (typeof pdfjs.getDocument !== 'function')
-    throw new Error(`PDF reader loaded incorrectly (getDocument=${typeof pdfjs.getDocument}) — try a TXT file instead`)
+    throw new Error('PDF reader unavailable — try a TXT file instead')
 
-  // Worker served from same origin (public/) — no CDN, works offline
+  // Worker is served locally (public/pdf.worker.min.mjs) — no CDN needed
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   onProgress?.('Reading PDF…')
+  const arrayBuffer = await file.arrayBuffer()
+
   let pdf
   try {
-    const arrayBuffer = await file.arrayBuffer()
     pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
-  } catch (e) { throw new Error(`Failed to read PDF: ${e.message}`) }
+  } catch (e) { throw new Error(`Could not open PDF: ${e.message}`) }
 
   const meta   = await pdf.getMetadata().catch(() => ({}))
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
@@ -65,52 +61,66 @@ async function parsePDF(file, onProgress) {
   return { title, author, chapters: splitChapters(pageTexts.join('\n\n')) }
 }
 
-// ── EPUB ─────────────────────────────────────────────────────────────────────
+// ── EPUB — native JSZip + DOMParser (no epub.js) ─────────────────────────────
 async function parseEPUB(file, onProgress) {
-  onProgress?.('Loading EPUB reader…')
+  onProgress?.('Loading EPUB…')
 
-  let epubMod
-  try { epubMod = await import('epubjs') }
-  catch (e) { throw new Error(`Could not load EPUB reader: ${e.message}`) }
-
-  const ePub = epubMod.default ?? epubMod
-  if (typeof ePub !== 'function')
-    throw new Error(`EPUB reader loaded incorrectly (type=${typeof ePub}) — try a TXT file instead`)
-
-  onProgress?.('Opening EPUB…')
-  let book
+  let JSZip
   try {
-    const arrayBuffer = await file.arrayBuffer()
-    book = ePub(arrayBuffer)
-    await book.ready
-  } catch (e) { throw new Error(`Failed to open EPUB: ${e.message}`) }
+    const mod = await import('jszip')
+    JSZip = mod.default ?? mod
+  } catch (e) { throw new Error(`EPUB unzip failed to load: ${e.message}`) }
 
-  onProgress?.('Reading metadata…')
-  let meta = {}
-  try { meta = await book.loaded.metadata } catch { /* use defaults */ }
+  onProgress?.('Unzipping…')
+  const arrayBuffer = await file.arrayBuffer()
+  let zip
+  try { zip = await JSZip.loadAsync(arrayBuffer) }
+  catch (e) { throw new Error(`Could not unzip EPUB: ${e.message}`) }
 
-  const title  = meta.title   || file.name.replace(/\.[^.]+$/, '')
-  const author = meta.creator || 'Unknown'
+  // 1. Read container.xml → find OPF path
+  const containerXml = await zip.file('META-INF/container.xml')?.async('text')
+  if (!containerXml) throw new Error('Invalid EPUB: missing META-INF/container.xml')
 
-  onProgress?.('Reading chapters…')
-  let spineItems = []
-  try {
-    await book.spine.ready.catch(() => {})
-    spineItems = book.spine.spineItems ?? book.spine.items ?? []
-  } catch (e) { throw new Error(`Failed to read EPUB spine: ${e.message}`) }
+  const parser   = new DOMParser()
+  const contDoc  = parser.parseFromString(containerXml, 'text/xml')
+  const opfPath  = contDoc.querySelector('rootfile')?.getAttribute('full-path')
+  if (!opfPath) throw new Error('Invalid EPUB: no rootfile in container.xml')
 
+  // 2. Read OPF → metadata + spine
+  const opfXml = await zip.file(opfPath)?.async('text')
+  if (!opfXml) throw new Error(`Invalid EPUB: OPF file not found at ${opfPath}`)
+
+  const opfDoc   = parser.parseFromString(opfXml, 'text/xml')
+  const metaEl   = opfDoc.querySelector('metadata')
+  const title    = metaEl?.querySelector('title')?.textContent?.trim()
+               || file.name.replace(/\.[^.]+$/, '')
+  const author   = metaEl?.querySelector('creator')?.textContent?.trim() || 'Unknown'
+
+  const opfDir   = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : ''
+  const manifest = {}
+  opfDoc.querySelectorAll('manifest item').forEach(item => {
+    manifest[item.getAttribute('id')] = item.getAttribute('href')
+  })
+
+  const spineHrefs = [...opfDoc.querySelectorAll('spine itemref')]
+    .map(ref => manifest[ref.getAttribute('idref')])
+    .filter(Boolean)
+
+  // 3. Extract text from each spine file
   const chapters = []
-  for (const item of spineItems) {
+  for (let i = 0; i < spineHrefs.length; i++) {
+    if (i % 5 === 0) onProgress?.(`Reading chapter ${i + 1} of ${spineHrefs.length}…`)
     try {
-      if (typeof item.load !== 'function') continue
-      const el = await item.load(book.load.bind(book))
-      if (!el) continue
-      // Section.load resolves with xml.documentElement (an Element, not a Document)
-      // Use the element's textContent and querySelector directly
-      const node = (el.nodeType === 9 ? el.body ?? el.documentElement : el) ?? el
-      const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim()
+      const path = opfDir + spineHrefs[i].split('#')[0]   // strip fragment
+      const html = await zip.file(path)?.async('text')
+      if (!html) continue
+
+      const doc = parser.parseFromString(html, 'text/html')
+      doc.querySelectorAll('script,style,nav').forEach(el => el.remove())
+      const text = (doc.body?.textContent ?? '').replace(/\s+/g, ' ').trim()
       if (text.length < 80) continue
-      const heading = node.querySelector?.('h1,h2,h3')?.textContent?.trim()
+
+      const heading = doc.querySelector('h1,h2,h3')?.textContent?.trim()
       chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
     } catch { continue }
   }
@@ -128,7 +138,6 @@ async function parseEPUB(file, onProgress) {
 export async function ingestFile(file, onProgress) {
   const ext = (file.name.split('.').pop() ?? '').toLowerCase()
 
-  // 90-second hard timeout — prevents infinite spinner on mobile
   const timeout = new Promise((_, reject) =>
     setTimeout(
       () => reject(new Error('Import timed out — try a smaller file or TXT format.')),
