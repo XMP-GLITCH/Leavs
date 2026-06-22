@@ -41,8 +41,9 @@ export default function ProfileScreen() {
   const hlCount     = useLiveQuery(() => db.highlights.count(), []) ?? 0
   const allVocab    = useLiveQuery(() => db.vocabulary.orderBy('createdAt').reverse().toArray(), []) ?? []
 
-  const [storage, setStorage] = useState({ used: 0, quota: 0 })
+  const [storage, setStorage]       = useState({ used: 0, quota: 0 })
   const [showAllVocab, setShowAllVocab] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState('idle') // 'idle' | 'checking' | 'uptodate'
 
   useEffect(() => {
     navigator.storage?.estimate().then(e =>
@@ -65,6 +66,32 @@ export default function ProfileScreen() {
 
   async function deleteVocabWord(id) {
     await db.vocabulary.delete(id)
+  }
+
+  async function checkForUpdates() {
+    if (!('serviceWorker' in navigator)) return
+    setUpdateStatus('checking')
+    try {
+      const reg = await navigator.serviceWorker.getRegistration()
+      if (!reg) { setUpdateStatus('idle'); return }
+
+      let found = false
+      reg.addEventListener('updatefound', () => { found = true }, { once: true })
+
+      await reg.update()
+
+      // Give the browser 3 s to download + activate the new SW.
+      // If found, App.jsx's controllerchange handler will reload the page.
+      // If not found, show "up to date".
+      setTimeout(() => {
+        if (!found) {
+          setUpdateStatus('uptodate')
+          setTimeout(() => setUpdateStatus('idle'), 2500)
+        }
+      }, 3000)
+    } catch {
+      setUpdateStatus('idle')
+    }
   }
 
   const visibleVocab = showAllVocab ? allVocab : allVocab.slice(0, 5)
@@ -216,6 +243,26 @@ export default function ProfileScreen() {
           <div className="pref-card">
             <div className="about-row"><span>Version</span><strong>0.1.0</strong></div>
             <div className="about-row"><span>Built by</span><strong>Neville — Apex Tech</strong></div>
+
+            <div className="pref-row" style={{ cursor: updateStatus === 'checking' ? 'default' : 'pointer' }}
+              onClick={updateStatus === 'idle' ? checkForUpdates : undefined}>
+              <div className="pref-ico pico-moss">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                  style={{ animation: updateStatus === 'checking' ? 'spin 1s linear infinite' : 'none' }}>
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+              </div>
+              <div className="pref-txt">
+                <h4>Check for updates</h4>
+                <p>
+                  {updateStatus === 'checking' && 'Checking…'}
+                  {updateStatus === 'uptodate' && 'Already up to date'}
+                  {updateStatus === 'idle'     && 'Force-check for a new version'}
+                </p>
+              </div>
+            </div>
+
             {typeof window.__leavsInstall === 'function' && (
               <div className="pref-row" style={{ cursor: 'pointer' }} onClick={() => window.__leavsInstall?.()}>
                 <div className="pref-ico pico-moss">

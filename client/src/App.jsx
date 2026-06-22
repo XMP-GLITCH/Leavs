@@ -42,14 +42,32 @@ export default function App() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
 
-    // When a new SW takes control, reload so the page gets the new JS bundle.
     let reloading = false
-    const onControllerChange = () => {
+    function doReload() {
       if (reloading) return
       reloading = true
       window.location.reload()
     }
-    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange)
+
+    // controllerchange fires when a new SW takes control of this page
+    navigator.serviceWorker.addEventListener('controllerchange', doReload)
+
+    // Also watch the registration directly: updatefound → installing → activated
+    // This catches cases (installed PWA on iOS) where controllerchange is delayed
+    async function watchReg() {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration()
+        if (!reg) return
+        reg.addEventListener('updatefound', () => {
+          const sw = reg.installing
+          if (!sw) return
+          sw.addEventListener('statechange', () => {
+            if (sw.state === 'activated') doReload()
+          })
+        })
+      } catch {}
+    }
+    watchReg()
 
     // Poll for updates: 3 s after load, then every 10 min, and on tab focus.
     async function checkForUpdate() {
@@ -65,7 +83,7 @@ export default function App() {
     window.addEventListener('focus', onVisible)
 
     return () => {
-      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
+      navigator.serviceWorker.removeEventListener('controllerchange', doReload)
       clearTimeout(t); clearInterval(iv)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
