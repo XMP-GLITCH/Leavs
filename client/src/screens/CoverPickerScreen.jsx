@@ -30,12 +30,19 @@ function buildExcerpt(chapters) {
 }
 
 // Pollinations.ai — free, no API key needed, FLUX model
+// AbortController used instead of AbortSignal.timeout() for iOS <16 compat
 async function generateImage(title, scene, seed) {
   const fullPrompt = `${scene} No people, no faces, no human figures, no silhouettes. No text, no letters, no words. Professional book cover art, portrait orientation, publishable quality.`
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux`
-  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
-  if (!res.ok) throw new Error(`Image generation failed (${res.status})`)
-  return blobToDataUrl(await res.blob())
+  const ctrl  = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 90_000)
+  try {
+    const res = await fetch(url, { signal: ctrl.signal })
+    if (!res.ok) throw new Error(`Pollinations ${res.status}`)
+    return blobToDataUrl(await res.blob())
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export default function CoverPickerScreen() {
@@ -96,7 +103,10 @@ export default function CoverPickerScreen() {
       )
       const covers  = results.filter(r => r.status === 'fulfilled').map(r => r.value)
 
-      if (!covers.length) throw new Error('Image generation failed — check your internet connection and try again.')
+      if (!covers.length) {
+        const firstErr = results.find(r => r.status === 'rejected')?.reason
+        throw new Error(firstErr?.message || 'All cover generations failed.')
+      }
 
       setAiCovers(covers)
       setSelected('ai-0')
