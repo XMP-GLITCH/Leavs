@@ -43,7 +43,9 @@ export default function ProfileScreen() {
 
   const [storage, setStorage]       = useState({ used: 0, quota: 0 })
   const [showAllVocab, setShowAllVocab] = useState(false)
-  const [updateStatus, setUpdateStatus] = useState('idle') // 'idle' | 'checking' | 'uptodate'
+  // 'idle' | 'checking' | 'downloading' | 'installing' | 'uptodate'
+  const [updatePhase, setUpdatePhase]       = useState('idle')
+  const [updateProgress, setUpdateProgress] = useState(0)
 
   useEffect(() => {
     navigator.storage?.estimate().then(e =>
@@ -70,27 +72,54 @@ export default function ProfileScreen() {
 
   async function checkForUpdates() {
     if (!('serviceWorker' in navigator)) return
-    setUpdateStatus('checking')
+    setUpdatePhase('checking')
+    setUpdateProgress(0)
+
     try {
       const reg = await navigator.serviceWorker.getRegistration()
-      if (!reg) { setUpdateStatus('idle'); return }
+      if (!reg) { setUpdatePhase('idle'); return }
 
       let found = false
-      reg.addEventListener('updatefound', () => { found = true }, { once: true })
+
+      reg.addEventListener('updatefound', () => {
+        found = true
+        setUpdatePhase('downloading')
+        setUpdateProgress(5)
+
+        // Simulate download progress with small random ticks
+        let prog = 5
+        const ticker = setInterval(() => {
+          prog = Math.min(prog + Math.random() * 18, 80)
+          setUpdateProgress(Math.round(prog))
+        }, 350)
+
+        const sw = reg.installing
+        if (!sw) { clearInterval(ticker); return }
+
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' || sw.state === 'activating') {
+            clearInterval(ticker)
+            setUpdatePhase('installing')
+            setUpdateProgress(90)
+          }
+          if (sw.state === 'activated') {
+            setUpdateProgress(100)
+            setTimeout(() => window.location.reload(), 600)
+          }
+        })
+      }, { once: true })
 
       await reg.update()
 
-      // Give the browser 3 s to download + activate the new SW.
-      // If found, App.jsx's controllerchange handler will reload the page.
-      // If not found, show "up to date".
+      // After 4 s with no updatefound → already on latest version
       setTimeout(() => {
         if (!found) {
-          setUpdateStatus('uptodate')
-          setTimeout(() => setUpdateStatus('idle'), 2500)
+          setUpdatePhase('uptodate')
+          setTimeout(() => { setUpdatePhase('idle'); setUpdateProgress(0) }, 2500)
         }
-      }, 3000)
+      }, 4000)
     } catch {
-      setUpdateStatus('idle')
+      setUpdatePhase('idle')
     }
   }
 
@@ -244,22 +273,36 @@ export default function ProfileScreen() {
             <div className="about-row"><span>Version</span><strong>0.1.0</strong></div>
             <div className="about-row"><span>Built by</span><strong>Neville — Apex Tech</strong></div>
 
-            <div className="pref-row" style={{ cursor: updateStatus === 'checking' ? 'default' : 'pointer' }}
-              onClick={updateStatus === 'idle' ? checkForUpdates : undefined}>
+            <div className="pref-row"
+              style={{ cursor: updatePhase === 'idle' ? 'pointer' : 'default' }}
+              onClick={updatePhase === 'idle' ? checkForUpdates : undefined}>
               <div className="pref-ico pico-moss">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                  style={{ animation: updateStatus === 'checking' ? 'spin 1s linear infinite' : 'none' }}>
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
+                {updatePhase === 'uptodate' ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                    style={{ animation: updatePhase !== 'idle' && updatePhase !== 'uptodate' ? 'spin 1s linear infinite' : 'none' }}>
+                    <polyline points="23 4 23 10 17 10" />
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                  </svg>
+                )}
               </div>
               <div className="pref-txt">
                 <h4>Check for updates</h4>
-                <p>
-                  {updateStatus === 'checking' && 'Checking…'}
-                  {updateStatus === 'uptodate' && 'Already up to date'}
-                  {updateStatus === 'idle'     && 'Force-check for a new version'}
+                <p style={{ color: updatePhase === 'uptodate' ? 'var(--vein-light)' : undefined }}>
+                  {updatePhase === 'idle'        && 'Tap to check for a new version'}
+                  {updatePhase === 'checking'    && 'Checking for updates…'}
+                  {updatePhase === 'downloading' && `Downloading update — ${updateProgress}%`}
+                  {updatePhase === 'installing'  && 'Installing… restarting shortly'}
+                  {updatePhase === 'uptodate'    && 'App is up to date'}
                 </p>
+                {(updatePhase === 'downloading' || updatePhase === 'installing') && (
+                  <div className="update-bar">
+                    <div className="update-bar__fill" style={{ width: `${updateProgress}%` }} />
+                  </div>
+                )}
               </div>
             </div>
 

@@ -1673,6 +1673,21 @@ img { display: block; max-width: 100%; height: auto; }
 .about-row span  { font-size: 13px; color: var(--text-secondary); }
 .about-row strong { font-size: 13px; color: var(--ink); font-weight: 500; }
 
+/* Update progress bar (inside pref-txt) */
+.update-bar {
+  height: 3px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+.update-bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--moss), var(--vein-light));
+  border-radius: 2px;
+  transition: width 0.35s ease;
+}
+
 /* ─── Multi-part Import ─────────────────────────────────────────── */
 .imp-hdr { padding: 54px 22px 16px; }
 .imp-hdr .back-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
