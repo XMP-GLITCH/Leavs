@@ -30,31 +30,30 @@ function buildExcerpt(chapters) {
   return [start, mid, ending].filter(Boolean).join('\n\n[...]\n\n').trim()
 }
 
-// Build 4 content-aware scene prompts from actual book text.
-// Falls back to title-only if no excerpt is available.
+// Build 4 content-driven prompts from actual book text.
+// Style is derived from the content itself — no predetermined aesthetics.
 function buildContentScenes(title, author, excerpt) {
   const hint = (excerpt || '').replace(/\s+/g, ' ').trim()
+  const neg  = 'No people. No faces. No human figures. No silhouettes. No text. No letters. No words. Professional book cover art, portrait orientation, publishable quality.'
+
   if (!hint) {
-    // Pure title-only fallback (last resort)
     return [
-      `Flat clean minimal illustration: abstract geometric shapes evoking the subject matter of "${title}". No people. Muted professional colour palette.`,
-      `Minimal graphic design: bold symbolic icon relevant to "${title}" on a clean background. No humans, no faces. Modern aesthetic.`,
-      `Abstract visual composition: textured shapes and colours evoking the tone of "${title}". No figures, no people. Contemporary design.`,
-      `Clean illustrative cover: symbolic object or environment from "${title}". No people, no faces. Precise lines, professional layout.`,
+      `Book cover art for "${title}" by ${author}. ${neg}`,
+      `Cover illustration for "${title}". Symbolic imagery reflecting the title's subject matter. ${neg}`,
+      `Alternative cover design for "${title}" by ${author}. ${neg}`,
+      `Graphic cover for the book "${title}". ${neg}`,
     ]
   }
 
-  // Use opening passage (rich in setting + tone) as the primary visual cue,
-  // then layer in middle and end hints for variety across the 4 styles.
-  const open = hint.slice(0, 220)
-  const mid  = hint.length > 3500 ? hint.slice(Math.floor(hint.length / 2) - 100, Math.floor(hint.length / 2) + 100) : open
-  const end  = hint.length > 1500 ? hint.slice(-180) : open
+  const open = hint.slice(0, 350)
+  const mid  = hint.length > 3500 ? hint.slice(Math.floor(hint.length / 2) - 175, Math.floor(hint.length / 2) + 175) : open
+  const end  = hint.length > 1500 ? hint.slice(-250) : open
 
   return [
-    `Atmospheric painterly book cover art for "${title}" by ${author}. The story opens: "${open}". Evocative abstract illustration of themes and mood. No people, no faces, no text, no letters.`,
-    `Minimalist symbolic cover design for "${title}". Mid-book passage: "${mid}". Abstract shapes, objects, and colours from the book's world. No humans, no faces, no letters.`,
-    `Cinematic moody illustration for "${title}" by ${author}. Closing passage: "${end}". Dramatic lighting, abstract scene. No faces, no text, no people, no silhouettes.`,
-    `Bold graphic cover art. Book: "${title}". Excerpt: "${open.slice(0, 160)}". Strong symbolic imagery, rich colour. No figures, no words, no text, no letters.`,
+    `Book cover for "${title}" by ${author}. The content reads: "${open}". Illustrate the world, atmosphere, and subject matter this text describes. Let the content determine the visual tone and style. ${neg}`,
+    `Cover art for "${title}". Passage from the text: "${mid}". Create imagery that reflects the specific themes and emotional tone revealed in this excerpt. ${neg}`,
+    `Book cover for "${title}" by ${author}. From the text: "${end}". Visual imagery drawn directly from the objects, settings, and ideas in this passage. ${neg}`,
+    `Alternative cover for "${title}". Text: "${open.slice(0, 220)}". Focus on the key symbols or environments implied by this content. ${neg}`,
   ]
 }
 
