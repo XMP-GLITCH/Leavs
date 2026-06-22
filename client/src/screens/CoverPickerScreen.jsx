@@ -30,18 +30,22 @@ function buildExcerpt(chapters) {
   return [start, mid, ending].filter(Boolean).join('\n\n[...]\n\n').trim()
 }
 
-// Build 4 content-driven prompts from actual book text.
-// Style is derived from the content itself — no predetermined aesthetics.
+// Build 4 minimal content-driven prompts from actual book text.
+// All 4 share the same minimal aesthetic — variety comes from which part of
+// the book each focuses on, not from different predetermined styles.
 function buildContentScenes(title, author, excerpt) {
   const hint = (excerpt || '').replace(/\s+/g, ' ').trim()
-  const neg  = 'No people. No faces. No human figures. No silhouettes. No text. No letters. No words. Professional book cover art, portrait orientation, publishable quality.'
+
+  // Every prompt starts with this hard style lock to override Pollinations' defaults
+  const style = 'Minimal flat design book cover. Clean simple composition. One or two symbolic objects or shapes. Limited muted colour palette. Flat vector style. No watercolor. No painting. No brushstrokes. No anime. No manga. No cartoon. No dreamy effects. No fantasy. No texture.'
+  const neg   = 'No people. No faces. No human figures. No silhouettes. No text. No letters. No words. Professional book cover, portrait orientation.'
 
   if (!hint) {
     return [
-      `Book cover art for "${title}" by ${author}. ${neg}`,
-      `Cover illustration for "${title}". Symbolic imagery reflecting the title's subject matter. ${neg}`,
-      `Alternative cover design for "${title}" by ${author}. ${neg}`,
-      `Graphic cover for the book "${title}". ${neg}`,
+      `${style} Book: "${title}" by ${author}. One minimal symbol that represents this book. ${neg}`,
+      `${style} Cover for "${title}". Single clean graphic element suggested by the title. ${neg}`,
+      `${style} Design for "${title}" by ${author}. Abstract minimal shape or object. ${neg}`,
+      `${style} Book cover for "${title}". Simple iconic image from the subject matter. ${neg}`,
     ]
   }
 
@@ -50,10 +54,10 @@ function buildContentScenes(title, author, excerpt) {
   const end  = hint.length > 1500 ? hint.slice(-250) : open
 
   return [
-    `Book cover for "${title}" by ${author}. The content reads: "${open}". Illustrate the world, atmosphere, and subject matter this text describes. Let the content determine the visual tone and style. ${neg}`,
-    `Cover art for "${title}". Passage from the text: "${mid}". Create imagery that reflects the specific themes and emotional tone revealed in this excerpt. ${neg}`,
-    `Book cover for "${title}" by ${author}. From the text: "${end}". Visual imagery drawn directly from the objects, settings, and ideas in this passage. ${neg}`,
-    `Alternative cover for "${title}". Text: "${open.slice(0, 220)}". Focus on the key symbols or environments implied by this content. ${neg}`,
+    `${style} The book "${title}" by ${author}. Content: "${open}". Pick one key object or symbol from this text. Make it the single focal point of the cover. ${neg}`,
+    `${style} Book "${title}". Passage: "${mid}". Identify one concrete visual element from this content and place it minimally on a clean background. ${neg}`,
+    `${style} "${title}" by ${author}. Text: "${end}". One simple shape or icon that represents the subject of this passage. ${neg}`,
+    `${style} Cover for "${title}". Content: "${open.slice(0, 220)}". Abstract minimal representation — one or two flat graphic shapes derived from this material. ${neg}`,
   ]
 }
 
@@ -80,7 +84,7 @@ async function generateImage(title, scene, seed) {
   } catch { /* fall through */ }
 
   // ── 2. Fallback: Pollinations.ai (free, no key, FLUX model) ──
-  const negative = 'faces,humans,people,silhouettes,figures,body,portrait,person,text,words,letters,typography,watermark,logo,signature'
+  const negative = 'faces,humans,people,silhouettes,figures,body,portrait,person,text,words,letters,typography,watermark,logo,signature,watercolor,painting,brushstrokes,anime,manga,cartoon,dreamy,fantasy,painterly,illustrated,sketch,grunge,texture,noise'
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux&negative=${encodeURIComponent(negative)}&enhance=true`
   const res = await fetchWithTimeout(url, {}, 90_000)
   if (!res.ok) throw new Error(`Image generation failed (${res.status})`)
