@@ -29,13 +29,31 @@ function buildExcerpt(chapters) {
   return [start, mid, ending].filter(Boolean).join('\n\n[...]\n\n').trim()
 }
 
-// Generic scene descriptions used when the server/Gemini isn't available
-function clientFallbackScenes(title) {
+// Build 4 content-aware scene prompts from actual book text.
+// Falls back to title-only if no excerpt is available.
+function buildContentScenes(title, author, excerpt) {
+  const hint = (excerpt || '').replace(/\s+/g, ' ').trim()
+  if (!hint) {
+    // Pure title-only fallback (last resort)
+    return [
+      `Flat clean minimal illustration: abstract geometric shapes evoking the subject matter of "${title}". No people. Muted professional colour palette.`,
+      `Minimal graphic design: bold symbolic icon relevant to "${title}" on a clean background. No humans, no faces. Modern aesthetic.`,
+      `Abstract visual composition: textured shapes and colours evoking the tone of "${title}". No figures, no people. Contemporary design.`,
+      `Clean illustrative cover: symbolic object or environment from "${title}". No people, no faces. Precise lines, professional layout.`,
+    ]
+  }
+
+  // Use opening passage (rich in setting + tone) as the primary visual cue,
+  // then layer in middle and end hints for variety across the 4 styles.
+  const open = hint.slice(0, 220)
+  const mid  = hint.length > 3500 ? hint.slice(Math.floor(hint.length / 2) - 100, Math.floor(hint.length / 2) + 100) : open
+  const end  = hint.length > 1500 ? hint.slice(-180) : open
+
   return [
-    `Flat clean minimal illustration: abstract geometric shapes and symbols representing the subject matter of "${title}". No people. Muted professional colour palette.`,
-    `Minimal graphic design: bold simple icon or object relevant to "${title}" on a clean background. No humans, no faces. Solid modern aesthetic.`,
-    `Abstract visual composition: textured shapes, patterns, and colours evoking the tone of "${title}". No figures, no people. Contemporary design.`,
-    `Clean diagrammatic illustration: symbolic object or environment from "${title}". No people, no faces, no silhouettes. Precise lines, professional layout.`,
+    `Atmospheric painterly book cover art for "${title}" by ${author}. The story opens: "${open}". Evocative abstract illustration of themes and mood. No people, no faces, no text, no letters.`,
+    `Minimalist symbolic cover design for "${title}". Mid-book passage: "${mid}". Abstract shapes, objects, and colours from the book's world. No humans, no faces, no letters.`,
+    `Cinematic moody illustration for "${title}" by ${author}. Closing passage: "${end}". Dramatic lighting, abstract scene. No faces, no text, no people, no silhouettes.`,
+    `Bold graphic cover art. Book: "${title}". Excerpt: "${open.slice(0, 160)}". Strong symbolic imagery, rich colour. No figures, no words, no text, no letters.`,
   ]
 }
 
@@ -125,8 +143,8 @@ export default function CoverPickerScreen() {
         if (Array.isArray(body.scenes) && body.scenes.length) scenes = body.scenes
       } catch { /* server not available */ }
 
-      // Use client-side fallback scenes when server didn't return any
-      const effectiveScenes = scenes.length > 0 ? scenes : clientFallbackScenes(book.title)
+      // Use content-aware scenes built from actual book text when server unavailable
+      const effectiveScenes = scenes.length > 0 ? scenes : buildContentScenes(book.title, book.author, excerpt)
 
       // ── 3. Generate images (HF FLUX → Pollinations fallback per image) ──
       const seeds   = [42, 137, 512, 999]
