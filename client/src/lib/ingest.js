@@ -201,6 +201,13 @@ async function parseEPUB(file, onProgress) {
       if (!html) continue
       const doc = parser.parseFromString(html, 'text/html')
       doc.querySelectorAll('script,style,nav').forEach(el => el.remove())
+      // Replace <img> with a placeholder so inline images aren't silently lost
+      doc.querySelectorAll('img').forEach(img => {
+        const alt = img.getAttribute('alt')
+        const span = doc.createElement('span')
+        span.textContent = alt ? ` [image: ${alt}] ` : ' [image] '
+        img.replaceWith(span)
+      })
       const text = (doc.body?.textContent ?? '').replace(/\s+/g, ' ').trim()
       if (text.length < 80) continue
       const heading = doc.querySelector('h1,h2,h3')?.textContent?.trim()

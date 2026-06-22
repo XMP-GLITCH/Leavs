@@ -29,25 +29,13 @@ function buildExcerpt(chapters) {
   return [start, mid, ending].filter(Boolean).join('\n\n[...]\n\n').trim()
 }
 
-// HF FLUX.1-schnell — retries once if model is cold-starting
+// Pollinations.ai — free, no API key needed, FLUX model
 async function generateImage(title, scene, seed) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch('/api/covers/image', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title, scene, seed }),
-    })
-
-    if (res.status === 503) {
-      const { estimated_time = 20 } = await res.json().catch(() => ({}))
-      await new Promise(r => setTimeout(r, Math.min(estimated_time * 1000, 25_000)))
-      continue
-    }
-
-    if (!res.ok) throw new Error(`Generation error ${res.status}`)
-    return blobToDataUrl(await res.blob())
-  }
-  throw new Error('Model is warming up — try again in a moment.')
+  const fullPrompt = `${scene} No people, no faces, no human figures, no silhouettes. No text, no letters, no words. Professional book cover art, portrait orientation, publishable quality.`
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux`
+  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+  if (!res.ok) throw new Error(`Image generation failed (${res.status})`)
+  return blobToDataUrl(await res.blob())
 }
 
 export default function CoverPickerScreen() {
@@ -108,7 +96,7 @@ export default function CoverPickerScreen() {
       )
       const covers  = results.filter(r => r.status === 'fulfilled').map(r => r.value)
 
-      if (!covers.length) throw new Error('Image generation failed — add HF_TOKEN to server/.env (free at huggingface.co/settings/tokens)')
+      if (!covers.length) throw new Error('Image generation failed — check your internet connection and try again.')
 
       setAiCovers(covers)
       setSelected('ai-0')
