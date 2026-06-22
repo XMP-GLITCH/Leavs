@@ -32,57 +32,47 @@ function OfflineBanner() {
   )
 }
 
-// ── Update banner ─────────────────────────────────────────────────────────────
-function UpdateBanner({ onUpdate, onDismiss }) {
-  return (
-    <div className="update-banner">
-      <div className="update-banner__text">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <polyline points="23 4 23 10 17 10" />
-          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-        </svg>
-        <span>Update available</span>
-      </div>
-      <div className="update-banner__actions">
-        <button onClick={onDismiss}>Later</button>
-        <button className="update-banner__apply" onClick={onUpdate}>Restart</button>
-      </div>
-    </div>
-  )
-}
 
 export default function App() {
   // ── PWA update logic ───────────────────────────────────────────────────────
-  const {
-    needRefresh: [needRefresh, setNeedRefresh],
-    updateServiceWorker,
-  } = useRegisterSW()
-
-  async function checkForUpdate(manual = false) {
-    if (!('serviceWorker' in navigator)) return
-    try {
-      const reg = await navigator.serviceWorker.getRegistration()
-      if (!reg) return
-      if (manual && reg.waiting) { setNeedRefresh(true); return }
-      await reg.update()
-      if (manual && reg.waiting) setNeedRefresh(true)
-    } catch {}
-  }
+  // skipWaiting:true means new SWs activate immediately — no "waiting" state,
+  // so needRefresh never fires. Instead we listen for controllerchange and reload.
+  useRegisterSW()
 
   useEffect(() => {
-    const t  = setTimeout(() => checkForUpdate(), 2500)
-    const iv = setInterval(() => checkForUpdate(), 10 * 60 * 1000)
+    if (!('serviceWorker' in navigator)) return
+
+    // When a new SW takes control, reload so the page gets the new JS bundle.
+    let reloading = false
+    const onControllerChange = () => {
+      if (reloading) return
+      reloading = true
+      window.location.reload()
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange)
+
+    // Poll for updates: 3 s after load, then every 10 min, and on tab focus.
+    async function checkForUpdate() {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration()
+        await reg?.update()
+      } catch {}
+    }
+    const t  = setTimeout(checkForUpdate, 3000)
+    const iv = setInterval(checkForUpdate, 10 * 60 * 1000)
     const onVisible = () => { if (document.visibilityState === 'visible') checkForUpdate() }
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
+
     return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
       clearTimeout(t); clearInterval(iv)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
     }
   }, [])
 
-  // ── Install prompt logic ───────────────────────────────────────────────────
+  // ── Install prompt ────────────────────────────────────────────────────────
   const [installPrompt, setInstallPrompt] = useState(null)
 
   useEffect(() => {
@@ -106,12 +96,6 @@ export default function App() {
     <BrowserRouter>
       <div className="app-shell">
         <OfflineBanner />
-        {needRefresh && (
-          <UpdateBanner
-            onUpdate={() => updateServiceWorker(true)}
-            onDismiss={() => setNeedRefresh(false)}
-          />
-        )}
         <Routes>
           <Route path="/" element={<Navigate to="/library" replace />} />
           <Route path="/library" element={<LibraryScreen />} />
