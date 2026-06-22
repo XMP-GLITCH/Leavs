@@ -137,6 +137,11 @@ export default function LibraryScreen() {
     if (!file) return
     e.target.value = '' // allow re-selecting the same file
 
+    if (typeof ingestFile !== 'function') {
+      setIngestState({ status: 'error', message: 'Upload module failed to load — please close and reopen the app.' })
+      return
+    }
+
     try {
       setIngestState({ status: 'parsing', message: 'Reading file…' })
       const bookId = await ingestFile(file, msg =>

@@ -1,4 +1,5 @@
-import { db } from '../db/db'
+import { db }    from '../db/db'
+import JSZip      from 'jszip'
 
 // FileReader wrappers — file.arrayBuffer() and file.text() only landed in
 // Safari 14.1 (iOS 14.5). FileReader works all the way back to iOS 5.
@@ -48,22 +49,22 @@ async function parsePDF(file, onProgress) {
 
   let pdfjsMod
   try { pdfjsMod = await import('pdfjs-dist') }
-  catch (e) { throw new Error(`PDF reader failed to load: ${e.message}`) }
+  catch (e) { throw new Error(`Step[pdf-load]: ${e.message}`) }
 
   const pdfjs = pdfjsMod.default ?? pdfjsMod
   if (typeof pdfjs.getDocument !== 'function')
-    throw new Error('PDF reader unavailable — try a TXT file instead')
+    throw new Error(`Step[pdf-api]: getDocument is ${typeof pdfjs.getDocument} — try TXT`)
 
-  // Worker is served locally (public/pdf.worker.min.mjs) — no CDN needed
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   onProgress?.('Reading PDF…')
-  const arrayBuffer = await readArrayBuffer(file)
+  let arrayBuffer
+  try { arrayBuffer = await readArrayBuffer(file) }
+  catch (e) { throw new Error(`Step[pdf-read]: ${e.message}`) }
 
   let pdf
-  try {
-    pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
-  } catch (e) { throw new Error(`Could not open PDF: ${e.message}`) }
+  try { pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise }
+  catch (e) { throw new Error(`Step[pdf-open]: ${e.message}`) }
 
   const meta   = await pdf.getMetadata().catch(() => ({}))
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
@@ -72,50 +73,56 @@ async function parsePDF(file, onProgress) {
   const pageTexts = []
   for (let p = 1; p <= pdf.numPages; p++) {
     if (p % 10 === 0) onProgress?.(`Reading page ${p} of ${pdf.numPages}…`)
-    const page    = await pdf.getPage(p)
-    const content = await page.getTextContent()
-    pageTexts.push(content.items.map(it => it.str).join(' '))
+    try {
+      const page    = await pdf.getPage(p)
+      const content = await page.getTextContent()
+      pageTexts.push(content.items.map(it => it.str).join(' '))
+    } catch { pageTexts.push('') }
   }
 
   return { title, author, chapters: splitChapters(pageTexts.join('\n\n')) }
 }
 
-// ── EPUB — native JSZip + DOMParser (no epub.js) ─────────────────────────────
+// ── EPUB — JSZip + DOMParser (no epub.js) ────────────────────────────────────
 async function parseEPUB(file, onProgress) {
-  onProgress?.('Loading EPUB…')
+  onProgress?.('Unzipping EPUB…')
 
-  let JSZip
-  try {
-    const mod = await import('jszip')
-    JSZip = mod.default ?? mod
-  } catch (e) { throw new Error(`EPUB unzip failed to load: ${e.message}`) }
+  // JSZip is statically imported — no dynamic import needed
+  if (typeof JSZip?.loadAsync !== 'function')
+    throw new Error(`Step[epub-jszip]: JSZip.loadAsync is ${typeof JSZip?.loadAsync}`)
 
-  onProgress?.('Unzipping…')
-  const arrayBuffer = await readArrayBuffer(file)
+  let arrayBuffer
+  try { arrayBuffer = await readArrayBuffer(file) }
+  catch (e) { throw new Error(`Step[epub-read]: ${e.message}`) }
+
   let zip
   try { zip = await JSZip.loadAsync(arrayBuffer) }
-  catch (e) { throw new Error(`Could not unzip EPUB: ${e.message}`) }
+  catch (e) { throw new Error(`Step[epub-unzip]: ${e.message}`) }
 
-  // 1. Read container.xml → find OPF path
-  const containerXml = await zip.file('META-INF/container.xml')?.async('text')
-  if (!containerXml) throw new Error('Invalid EPUB: missing META-INF/container.xml')
+  // 1. container.xml → OPF path
+  let containerXml
+  try { containerXml = await zip.file('META-INF/container.xml')?.async('text') }
+  catch (e) { throw new Error(`Step[epub-container]: ${e.message}`) }
+  if (!containerXml) throw new Error('Step[epub-container]: missing META-INF/container.xml')
 
-  const parser   = new DOMParser()
-  const contDoc  = parser.parseFromString(containerXml, 'text/xml')
-  const opfPath  = contDoc.querySelector('rootfile')?.getAttribute('full-path')
-  if (!opfPath) throw new Error('Invalid EPUB: no rootfile in container.xml')
+  const parser  = new DOMParser()
+  const contDoc = parser.parseFromString(containerXml, 'text/xml')
+  const opfPath = contDoc.querySelector('rootfile')?.getAttribute('full-path')
+  if (!opfPath) throw new Error('Step[epub-opf-path]: no rootfile element')
 
-  // 2. Read OPF → metadata + spine
-  const opfXml = await zip.file(opfPath)?.async('text')
-  if (!opfXml) throw new Error(`Invalid EPUB: OPF file not found at ${opfPath}`)
+  // 2. OPF → metadata + spine
+  let opfXml
+  try { opfXml = await zip.file(opfPath)?.async('text') }
+  catch (e) { throw new Error(`Step[epub-opf-read]: ${e.message}`) }
+  if (!opfXml) throw new Error(`Step[epub-opf-read]: OPF not found at ${opfPath}`)
 
-  const opfDoc   = parser.parseFromString(opfXml, 'text/xml')
-  const metaEl   = opfDoc.querySelector('metadata')
-  const title    = metaEl?.querySelector('title')?.textContent?.trim()
-               || file.name.replace(/\.[^.]+$/, '')
-  const author   = metaEl?.querySelector('creator')?.textContent?.trim() || 'Unknown'
+  const opfDoc  = parser.parseFromString(opfXml, 'text/xml')
+  const metaEl  = opfDoc.querySelector('metadata')
+  const title   = metaEl?.querySelector('title')?.textContent?.trim()
+              || file.name.replace(/\.[^.]+$/, '')
+  const author  = metaEl?.querySelector('creator')?.textContent?.trim() || 'Unknown'
 
-  const opfDir   = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : ''
+  const opfDir  = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : ''
   const manifest = {}
   opfDoc.querySelectorAll('manifest item').forEach(item => {
     manifest[item.getAttribute('id')] = item.getAttribute('href')
@@ -125,20 +132,20 @@ async function parseEPUB(file, onProgress) {
     .map(ref => manifest[ref.getAttribute('idref')])
     .filter(Boolean)
 
+  if (spineHrefs.length === 0) throw new Error('Step[epub-spine]: no spine items found')
+
   // 3. Extract text from each spine file
   const chapters = []
   for (let i = 0; i < spineHrefs.length; i++) {
     if (i % 5 === 0) onProgress?.(`Reading chapter ${i + 1} of ${spineHrefs.length}…`)
     try {
-      const path = opfDir + spineHrefs[i].split('#')[0]   // strip fragment
+      const path = opfDir + spineHrefs[i].split('#')[0]
       const html = await zip.file(path)?.async('text')
       if (!html) continue
-
       const doc = parser.parseFromString(html, 'text/html')
       doc.querySelectorAll('script,style,nav').forEach(el => el.remove())
       const text = (doc.body?.textContent ?? '').replace(/\s+/g, ' ').trim()
       if (text.length < 80) continue
-
       const heading = doc.querySelector('h1,h2,h3')?.textContent?.trim()
       chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
     } catch { continue }
@@ -160,38 +167,49 @@ export async function ingestFile(file, onProgress) {
   const timeout = new Promise((_, reject) =>
     setTimeout(
       () => reject(new Error('Import timed out — try a smaller file or TXT format.')),
-      90_000
+      90000
     )
   )
 
   async function doIngest() {
     onProgress?.('Reading file…')
+
     let parsed
-    if      (ext === 'pdf')  parsed = await parsePDF(file, onProgress)
-    else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
-    else if (ext === 'txt')  parsed = await parseTXT(file)
-    else throw new Error(`Unsupported format: .${ext} — use PDF, EPUB, or TXT`)
+    try {
+      if      (ext === 'pdf')  parsed = await parsePDF(file, onProgress)
+      else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
+      else if (ext === 'txt')  parsed = await parseTXT(file)
+      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB or TXT`)
+    } catch (e) {
+      // Re-throw; Step[…] prefix tells us exactly where it broke
+      throw e
+    }
 
     onProgress?.(`Saving "${parsed.title}"…`)
 
-    const bookId = await db.books.add({
-      title:        parsed.title,
-      author:       parsed.author,
-      progress:     0,
-      mode:         'read',
-      addedAt:      Date.now(),
-      lastOpenedAt: Date.now(),
-    })
+    let bookId
+    try {
+      bookId = await db.books.add({
+        title:        parsed.title,
+        author:       parsed.author,
+        progress:     0,
+        mode:         'read',
+        addedAt:      Date.now(),
+        lastOpenedAt: Date.now(),
+      })
+    } catch (e) { throw new Error(`Step[db-book]: ${e.message}`) }
 
     const total = parsed.chapters.length
     for (let i = 0; i < total; i++) {
-      await db.chapters.add({
-        bookId,
-        index:       i,
-        title:       parsed.chapters[i].title,
-        text:        parsed.chapters[i].text,
-        audioStatus: 'none',
-      })
+      try {
+        await db.chapters.add({
+          bookId,
+          index:       i,
+          title:       parsed.chapters[i].title,
+          text:        parsed.chapters[i].text,
+          audioStatus: 'none',
+        })
+      } catch (e) { throw new Error(`Step[db-chapter-${i}]: ${e.message}`) }
       if (i % 5 === 0) onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
     }
 
