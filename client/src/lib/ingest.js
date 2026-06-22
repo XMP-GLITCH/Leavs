@@ -100,6 +100,64 @@ async function parsePDF(file, onProgress) {
   return { title, author, cover: null, chapters: splitChapters(pageTexts.join('\n\n')) }
 }
 
+// ── PPTX ─────────────────────────────────────────────────────────────────────
+async function parsePPTX(file, onProgress) {
+  onProgress?.('Unzipping presentation…')
+
+  let arrayBuffer
+  try { arrayBuffer = await readArrayBuffer(file) }
+  catch (e) { throw new Error(`Step[pptx-read]: ${e.message}`) }
+
+  let zip
+  try { zip = await JSZip.loadAsync(arrayBuffer) }
+  catch (e) { throw new Error(`Step[pptx-unzip]: ${e.message}`) }
+
+  // Metadata from docProps/core.xml
+  let title  = file.name.replace(/\.[^.]+$/, '')
+  let author = 'Unknown'
+  try {
+    const coreXml = await zip.file('docProps/core.xml')?.async('text')
+    if (coreXml) {
+      const coreDoc = new DOMParser().parseFromString(coreXml, 'text/xml')
+      title  = coreDoc.querySelector('title')?.textContent?.trim()   || title
+      author = coreDoc.querySelector('creator')?.textContent?.trim() || author
+    }
+  } catch { /* metadata optional */ }
+
+  // Collect slide files in order
+  const slideFiles = Object.keys(zip.files)
+    .filter(p => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+    .sort((a, b) => {
+      const n = s => parseInt(s.match(/(\d+)\.xml$/)?.[1] ?? '0')
+      return n(a) - n(b)
+    })
+
+  if (!slideFiles.length) throw new Error('Step[pptx-slides]: no slide XML files found — file may be corrupt or unsupported')
+
+  const chapters = []
+  for (let i = 0; i < slideFiles.length; i++) {
+    if (i % 10 === 0) onProgress?.(`Reading slide ${i + 1} of ${slideFiles.length}…`)
+    try {
+      const xml = await zip.file(slideFiles[i])?.async('text')
+      if (!xml) continue
+      // Extract text runs via regex — avoids namespace issues across browsers
+      const texts = [...xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => m[1]).filter(Boolean)
+      const text  = texts.join(' ').replace(/\s+/g, ' ').trim()
+      if (text.length < 3) continue
+      chapters.push({ title: `Slide ${i + 1}`, text })
+    } catch { continue }
+  }
+
+  return {
+    title,
+    author,
+    cover: null,
+    chapters: chapters.length
+      ? chapters
+      : [{ title: 'Slide 1', text: '[Could not extract text from this presentation. It may be image-based.]' }],
+  }
+}
+
 // ── EPUB cover extraction ─────────────────────────────────────────────────────
 async function extractEpubCover(zip, opfDoc, opfDir) {
   let coverHref = null
@@ -244,7 +302,8 @@ export async function ingestFile(file, onProgress) {
       if      (ext === 'pdf')  parsed = await parsePDF(file, onProgress)
       else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
       else if (ext === 'txt')  parsed = await parseTXT(file)
-      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB or TXT`)
+      else if (ext === 'pptx') parsed = await parsePPTX(file, onProgress)
+      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB, PPTX or TXT`)
     } catch (e) {
       throw e
     }

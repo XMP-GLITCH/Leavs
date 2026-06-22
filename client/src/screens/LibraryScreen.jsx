@@ -217,7 +217,7 @@ export default function LibraryScreen() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,.epub,.txt"
+        accept=".pdf,.epub,.txt,.pptx"
         hidden
         onChange={handleFileSelected}
       />
