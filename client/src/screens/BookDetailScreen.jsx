@@ -1,19 +1,8 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { db } from '../db/db'
-import { generateBookAudio } from '../lib/generateAudio'
 import LeafProgress from '../components/common/LeafProgress'
-
-const VOICES = [
-  { id: 'en-US-JennyNeural',   name: 'Jenny (US)'      },
-  { id: 'en-US-GuyNeural',     name: 'Guy (US)'        },
-  { id: 'en-GB-SoniaNeural',   name: 'Sonia (UK)'      },
-  { id: 'en-GB-RyanNeural',    name: 'Ryan (UK)'       },
-  { id: 'en-AU-NatashaNeural', name: 'Natasha (AU)'    },
-  { id: 'en-AU-WilliamNeural', name: 'William (AU)'    },
-  { id: 'en-IE-EmilyNeural',   name: 'Emily (Ireland)' },
-]
 
 function ChapterLeaf({ progress = 0, size = 16 }) {
   const uid = Math.random().toString(36).slice(2)
@@ -45,32 +34,13 @@ function ChapterLeaf({ progress = 0, size = 16 }) {
   )
 }
 
-function AudioStatusDot({ status }) {
-  if (!status || status === 'none') return null
-  if (status === 'generating') return (
-    <div style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid var(--vein)', borderTopColor: 'var(--moss)', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
-  )
-  if (status === 'ready') return (
-    <div style={{ width: 16, height: 16, borderRadius: '50%', background: 'var(--moss)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-      <svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5 5-5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" /></svg>
-    </div>
-  )
-  if (status === 'error') return (
-    <div style={{ width: 16, height: 16, borderRadius: '50%', background: 'rgba(212,114,96,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-      <svg width="8" height="8" viewBox="0 0 10 10" stroke="#D47260" fill="none" strokeWidth="1.8"><path d="M2 2l6 6M8 2l-6 6" /></svg>
-    </div>
-  )
-  return null
-}
 
 export default function BookDetailScreen() {
   const { id }  = useParams()
   const navigate = useNavigate()
   const bookId   = Number(id)
 
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [genMsg,       setGenMsg]       = useState('')
-  const [selectedVoice, setSelectedVoice] = useState('en-US-JennyNeural')
+  const [voices, setVoices] = useState([])
 
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
   const chapters = useLiveQuery(
@@ -79,31 +49,31 @@ export default function BookDetailScreen() {
   )
   const progress = useLiveQuery(() => db.progress.get(bookId), [bookId])
 
+  // Load device TTS voices (iOS defers population until after first call)
+  useEffect(() => {
+    const load = () => {
+      const all = speechSynthesis.getVoices()
+      setVoices(all.filter(v => v.lang.startsWith('en')))
+    }
+    load()
+    speechSynthesis.onvoiceschanged = load
+    return () => { speechSynthesis.onvoiceschanged = null }
+  }, [])
+
   if (!book) return null
 
   const pct         = Math.round((book.progress || 0) * 100)
   const resumeChIdx = progress?.chapterId ?? 0
   const currentCh   = chapters?.find(c => c.index === resumeChIdx)
 
-  const hasAnyAudio = chapters?.some(c => c.audioStatus && c.audioStatus !== 'none')
   const coverStyle  = book.cover ? undefined : { background: book.coverStyle || 'linear-gradient(140deg, #C96A28, #6B3010)' }
 
   async function handleSetMode(mode) {
     await db.books.update(bookId, { mode })
   }
 
-  async function handleGenerateAudio() {
-    if (isGenerating) return
-    setIsGenerating(true)
-    setGenMsg('Starting…')
-    try {
-      await generateBookAudio(bookId, selectedVoice, msg => setGenMsg(msg))
-    } catch (err) {
-      setGenMsg(`Error: ${err.message}`)
-    } finally {
-      setIsGenerating(false)
-      setGenMsg('')
-    }
+  async function handleVoiceChange(voiceURI) {
+    await db.books.update(bookId, { voice: voiceURI })
   }
 
   return (
@@ -172,82 +142,38 @@ export default function BookDetailScreen() {
           )}
         </div>
 
-        {/* Audio generation */}
-        {!hasAnyAudio && !isGenerating && (
-          <div className="gen-cta">
-            <div className="gen-cta-ico">
-              <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8">
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-              </svg>
+        {/* Narration voice — only shown in listen mode */}
+        {book.mode === 'listen' && (
+          <div className="gen-cta" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
+              <div className="gen-cta-ico">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                </svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 3 }}>
+                  Narration voice
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  {voices.length > 0 ? 'Using your device\'s built-in voice' : 'Device default voice'}
+                </div>
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 3 }}>
-                Generate audio narration
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                AI voice for all {chapters?.length ?? 0} chapters
-              </div>
-            </div>
-            <select
-              className="voice-select"
-              value={selectedVoice}
-              onChange={e => setSelectedVoice(e.target.value)}
-            >
-              {VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-            </select>
-            <button className="gen-cta-btn" onClick={handleGenerateAudio}>
-              Generate
-            </button>
-          </div>
-        )}
-
-        {/* Generation progress */}
-        {isGenerating && (
-          <div className="gen-blk">
-            <div className="gen-lbl" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 12, height: 12, borderRadius: '50%', border: '2px solid var(--vein)', borderTopColor: 'var(--moss)', animation: 'spin 0.8s linear infinite' }} />
-              {genMsg}
-            </div>
-            {chapters?.filter(c => c.audioStatus !== 'none').slice(0, 5).map(ch => (
-              <div className="gen-row" key={ch.id}>
-                <div className={`gen-ico ${ch.audioStatus === 'ready' ? 'g-done' : ch.audioStatus === 'generating' ? 'g-act' : 'g-pend'}`}>
-                  {ch.audioStatus === 'ready' && (
-                    <svg viewBox="0 0 12 12" stroke="white" fill="none" strokeWidth="2"><path d="M2 6l3 3 5-5" /></svg>
-                  )}
-                </div>
-                <div className="gen-txt">
-                  <h4>Ch. {ch.index + 1} · {ch.title || `Chapter ${ch.index + 1}`}</h4>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Audio ready — status list */}
-        {hasAnyAudio && !isGenerating && (
-          <div className="gen-blk">
-            <div className="gen-lbl">Audio generation</div>
-            {chapters?.slice(0, 4).map(ch => (
-              <div className="gen-row" key={ch.id}>
-                <div className={`gen-ico ${ch.audioStatus === 'ready' ? 'g-done' : 'g-pend'}`}>
-                  {ch.audioStatus === 'ready' && (
-                    <svg viewBox="0 0 12 12" stroke="white" fill="none" strokeWidth="2"><path d="M2 6l3 3 5-5" /></svg>
-                  )}
-                </div>
-                <div className="gen-txt">
-                  <h4>Ch. {ch.index + 1} · {ch.title || `Chapter ${ch.index + 1}`}</h4>
-                </div>
-              </div>
-            ))}
-            {chapters?.some(c => !c.audioStatus || c.audioStatus === 'none' || c.audioStatus === 'error') && (
-              <button
-                style={{ marginTop: 10, background: 'none', border: 'none', color: 'var(--moss)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 0' }}
-                onClick={handleGenerateAudio}
+            {voices.length > 0 && (
+              <select
+                className="voice-select"
+                style={{ width: '100%', marginLeft: 0 }}
+                value={book.voice || ''}
+                onChange={e => handleVoiceChange(e.target.value)}
               >
-                + Generate remaining chapters
-              </button>
+                <option value="">System default</option>
+                {voices.map(v => (
+                  <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>
+                ))}
+              </select>
             )}
           </div>
         )}
@@ -270,7 +196,6 @@ export default function BookDetailScreen() {
                   <h4>{ch.title || `Chapter ${ch.index + 1}`}</h4>
                   {isNow && <p style={{ color: 'var(--moss-light)', fontWeight: 600 }}>Now reading</p>}
                 </div>
-                <AudioStatusDot status={ch.audioStatus} />
                 <ChapterLeaf progress={isNow ? (book.progress || 0) : 0} />
               </div>
             )
@@ -287,7 +212,10 @@ export default function BookDetailScreen() {
             className="btn btn--primary btn--large"
             onClick={() => navigate(`/book/${id}/read?chapter=${resumeChIdx}`)}
           >
-            {(book.progress || 0) > 0 ? 'Continue reading' : 'Start reading'}
+            {book.mode === 'listen'
+              ? (book.progress || 0) > 0 ? 'Continue listening' : 'Start listening'
+              : (book.progress || 0) > 0 ? 'Continue reading'   : 'Start reading'
+            }
           </button>
         </div>
 

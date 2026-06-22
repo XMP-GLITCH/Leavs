@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { db } from '../db/db'
 import { AudioPlayer, computeWaveform, findActiveWord, fmtTime } from '../lib/audioPlayer'
+import { SpeechPlayer } from '../lib/speechPlayer'
 import { useSettings, getSetting } from '../utils/settings'
 
 const STATIC_WAVE = [0.3,0.55,0.7,0.5,0.85,0.4,0.65,0.9,0.45,0.75,0.55,0.8,0.35,0.6,0.95,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.8,0.35,0.65,0.9,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.35,0.65,0.5,0.4,0.3]
@@ -60,6 +61,7 @@ export default function ReaderScreen() {
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const playerRef         = useRef(null)
+  const speechPlayerRef   = useRef(null)
   const scrollRestoredRef = useRef(false)
   const wordBoundariesRef = useRef([])
   // Custom text-selection refs (avoid stale closures inside addEventListener)
@@ -122,7 +124,7 @@ export default function ReaderScreen() {
   }, [])
 
   useEffect(() => {
-    if (!audioChunk?.data || !playerRef.current) return
+    if (!audioChunk?.data || !playerRef.current || book?.mode === 'listen') return
     setAudioReady(false)
     setIsPlaying(false)
     setCurrentTime(0)
@@ -135,7 +137,56 @@ export default function ReaderScreen() {
       setWaveform(computeWaveform(playerRef.current.buffer, BARS))
       playerRef.current.setSpeed(SPEEDS[speedIdx])
     })
-  }, [audioChunk?.id])
+  }, [audioChunk?.id, book?.mode])
+
+  // ── SpeechPlayer lifecycle (listen mode — no pre-generated audio needed) ──
+  useEffect(() => {
+    if (book?.mode !== 'listen') {
+      // Clean up speech player if mode was switched away from listen
+      if (speechPlayerRef.current) {
+        speechPlayerRef.current.destroy()
+        speechPlayerRef.current = null
+        setAudioReady(false)
+        setIsPlaying(false)
+      }
+      return
+    }
+    if (!chapter?.text) return
+
+    const sp = new SpeechPlayer()
+
+    sp.onWordBoundary = absCharIdx => {
+      for (const para of paraTokensRef.current) {
+        for (const t of para.tokens) {
+          if (typeof t === 'object' && t.charStart <= absCharIdx && absCharIdx < t.charEnd) {
+            setActiveWordIdx(t.i)
+            return
+          }
+        }
+      }
+    }
+
+    sp.onTimeUpdate = (charPos, total) => {
+      setCurrentTime(charPos)
+      if (total > 0) setAudioDuration(total)
+    }
+
+    sp.onEnded = () => {
+      setIsPlaying(false)
+      setCurrentTime(0)
+      setActiveWordIdx(-1)
+    }
+
+    sp.load(chapter.text, book?.voice || null)
+    speechPlayerRef.current = sp
+    setAudioReady(true)
+    setAudioDuration(chapter.text.length)
+    setCurrentTime(0)
+    setActiveWordIdx(-1)
+    setIsPlaying(false)
+
+    return () => { sp.destroy(); speechPlayerRef.current = null }
+  }, [chapter?.id, book?.mode, book?.voice])
 
   // ── Vocab definition fetch ───────────────────────────────────────────────
   useEffect(() => {
@@ -204,6 +255,7 @@ export default function ReaderScreen() {
       const rem = Math.max(0, Math.ceil((sleepEnd - Date.now()) / 1000))
       setSleepRemaining(rem)
       if (rem <= 0) {
+        speechPlayerRef.current?.pause()
         playerRef.current?.pause()
         setIsPlaying(false)
         setSleepEnd(null)
@@ -231,7 +283,11 @@ export default function ReaderScreen() {
   // ── Chapter navigation ───────────────────────────────────────────────────
   function goToChapter(idx) {
     if (idx < 0 || (chapterCount > 0 && idx >= chapterCount)) return
-    if (isPlaying) { playerRef.current?.pause(); setIsPlaying(false) }
+    if (isPlaying) {
+      speechPlayerRef.current?.pause()
+      playerRef.current?.pause()
+      setIsPlaying(false)
+    }
     scrollRestoredRef.current = false
     window.scrollTo(0, 0)
     navigate(`/book/${id}/read?chapter=${idx}`)
@@ -363,27 +419,52 @@ export default function ReaderScreen() {
   }
 
   // ── Audio controls ───────────────────────────────────────────────────────
+  const isListenMode = book?.mode === 'listen'
+
   function handlePlayPause() {
-    if (!audioReady || !playerRef.current) return
+    if (!audioReady) return
+    if (isListenMode) {
+      const sp = speechPlayerRef.current
+      if (!sp) return
+      if (isPlaying) { sp.pause(); setIsPlaying(false) }
+      else           { sp.play();  setIsPlaying(true)  }
+      return
+    }
+    if (!playerRef.current) return
     if (isPlaying) { playerRef.current.pause(); setIsPlaying(false) }
     else           { playerRef.current.play();  setIsPlaying(true)  }
   }
 
   function handleWaveformClick(e) {
-    if (!audioReady || !audioDuration || !playerRef.current) return
+    if (!audioReady || !audioDuration) return
     const rect  = e.currentTarget.getBoundingClientRect()
     const ratio = (e.clientX - rect.left) / rect.width
+    if (isListenMode) {
+      const charPos = Math.round(ratio * audioDuration)
+      speechPlayerRef.current?.seek(charPos)
+      setCurrentTime(charPos)
+      return
+    }
+    if (!playerRef.current) return
     playerRef.current.seek(ratio * audioDuration)
   }
 
   function handleSpeedToggle() {
     const next = (speedIdx + 1) % SPEEDS.length
     setSpeedIdx(next)
-    playerRef.current?.setSpeed(SPEEDS[next])
+    if (isListenMode) speechPlayerRef.current?.setRate(SPEEDS[next])
+    else              playerRef.current?.setSpeed(SPEEDS[next])
   }
 
   function handleSkip(delta) {
-    if (!audioReady || !playerRef.current) return
+    if (!audioReady) return
+    if (isListenMode) {
+      const sp = speechPlayerRef.current
+      if (!sp) return
+      sp.seek(currentTime + Math.round(delta * 12 * SPEEDS[speedIdx]))
+      return
+    }
+    if (!playerRef.current) return
     playerRef.current.seek(currentTime + delta)
   }
 
@@ -627,11 +708,15 @@ export default function ReaderScreen() {
             <h4>{book.title}</h4>
             <p>{chapter.title || `Ch. ${chapterIndex + 1}`}</p>
           </div>
-          {audioReady
-            ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
-            : chapter.audioStatus === 'ready'
-              ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
-              : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
+          {isListenMode
+            ? audioReady
+              ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
+              : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
+            : audioReady
+              ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
+              : chapter.audioStatus === 'ready'
+                ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
+                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
           }
         </div>
 
@@ -650,8 +735,17 @@ export default function ReaderScreen() {
         </div>
 
         <div className="pl-time">
-          <span>{fmtTime(currentTime)}</span>
-          <span>{audioDuration > 0 ? fmtTime(audioDuration) : '—:——'}</span>
+          {(() => {
+            const cps = 12 * SPEEDS[speedIdx]
+            const cur = isListenMode ? currentTime  / cps : currentTime
+            const dur = isListenMode ? audioDuration / cps : audioDuration
+            return (
+              <>
+                <span>{fmtTime(cur)}</span>
+                <span>{dur > 0 ? fmtTime(dur) : '—:——'}</span>
+              </>
+            )
+          })()}
         </div>
 
         <div className="pl-ctrl">
