@@ -237,9 +237,7 @@ export default function ReaderScreen() {
     navigate(`/book/${id}/read?chapter=${idx}`)
   }
 
-  // Keep paraTokensRef and customSelRef in sync for use inside addEventListener
-  useEffect(() => { paraTokensRef.current = paragraphTokens }, [paragraphTokens])
-  useEffect(() => { customSelRef.current  = customSel       }, [customSel])
+  useEffect(() => { customSelRef.current = customSel }, [customSel])
 
   // ── Custom long-press + drag selection (no native iOS blue highlight) ─────
   useEffect(() => {
@@ -306,7 +304,7 @@ export default function ReaderScreen() {
       el.removeEventListener('touchmove',  onTouchMove)
       el.removeEventListener('touchend',   onTouchEnd)
     }
-  }, [])   // stable setters + refs only — no deps needed
+  }, [chapter?.id])   // re-run when chapter mounts so .rdrbody exists in DOM
 
   // Desktop: click on word → vocab (touch handled by addEventListener above)
   function handleMouseUp(e) {
@@ -429,6 +427,9 @@ export default function ReaderScreen() {
 
     return result
   }, [chapter?.text])
+
+  // Keep ref in sync so touch listeners (addEventListener closures) can read it
+  useEffect(() => { paraTokensRef.current = paragraphTokens }, [paragraphTokens])
 
   // ── Highlight ranges ─────────────────────────────────────────────────────
   const hlRanges = useMemo(() => {
