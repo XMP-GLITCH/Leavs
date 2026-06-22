@@ -1,5 +1,24 @@
 import { db } from '../db/db'
 
+// FileReader wrappers — file.arrayBuffer() and file.text() only landed in
+// Safari 14.1 (iOS 14.5). FileReader works all the way back to iOS 5.
+function readArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload  = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+    r.readAsArrayBuffer(file)
+  })
+}
+function readText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload  = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+    r.readAsText(file)
+  })
+}
+
 // ── Chapter detection ────────────────────────────────────────────────────────
 const CH_BREAK = /^(?:chapter|ch\.?|part|section|book)\s+(?:\d+|[ivxlcdm]+)[^\n]*/im
 
@@ -19,7 +38,7 @@ function splitChapters(text) {
 
 // ── TXT ──────────────────────────────────────────────────────────────────────
 async function parseTXT(file) {
-  const text = await file.text()
+  const text = await readText(file)
   return { title: file.name.replace(/\.[^.]+$/, ''), author: 'Unknown', chapters: splitChapters(text) }
 }
 
@@ -39,7 +58,7 @@ async function parsePDF(file, onProgress) {
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   onProgress?.('Reading PDF…')
-  const arrayBuffer = await file.arrayBuffer()
+  const arrayBuffer = await readArrayBuffer(file)
 
   let pdf
   try {
@@ -72,7 +91,7 @@ async function parseEPUB(file, onProgress) {
   } catch (e) { throw new Error(`EPUB unzip failed to load: ${e.message}`) }
 
   onProgress?.('Unzipping…')
-  const arrayBuffer = await file.arrayBuffer()
+  const arrayBuffer = await readArrayBuffer(file)
   let zip
   try { zip = await JSZip.loadAsync(arrayBuffer) }
   catch (e) { throw new Error(`Could not unzip EPUB: ${e.message}`) }
