@@ -1,8 +1,17 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useState, useEffect } from 'react'
 import { db } from '../db/db'
 import LeafProgress from '../components/common/LeafProgress'
+
+const VOICES = [
+  { id: 'en-US-JennyNeural',   name: 'Jenny',   accent: 'American',   gender: 'Female' },
+  { id: 'en-US-GuyNeural',     name: 'Guy',     accent: 'American',   gender: 'Male'   },
+  { id: 'en-GB-SoniaNeural',   name: 'Sonia',   accent: 'British',    gender: 'Female' },
+  { id: 'en-GB-RyanNeural',    name: 'Ryan',    accent: 'British',    gender: 'Male'   },
+  { id: 'en-AU-NatashaNeural', name: 'Natasha', accent: 'Australian', gender: 'Female' },
+  { id: 'en-AU-WilliamNeural', name: 'William', accent: 'Australian', gender: 'Male'   },
+  { id: 'en-IE-EmilyNeural',   name: 'Emily',   accent: 'Irish',      gender: 'Female' },
+]
 
 function ChapterLeaf({ progress = 0, size = 16 }) {
   const uid = Math.random().toString(36).slice(2)
@@ -40,25 +49,12 @@ export default function BookDetailScreen() {
   const navigate = useNavigate()
   const bookId   = Number(id)
 
-  const [voices, setVoices] = useState([])
-
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
   const chapters = useLiveQuery(
     () => db.chapters.where('bookId').equals(bookId).sortBy('index'),
     [bookId],
   )
   const progress = useLiveQuery(() => db.progress.get(bookId), [bookId])
-
-  // Load device TTS voices (iOS defers population until after first call)
-  useEffect(() => {
-    const load = () => {
-      const all = speechSynthesis.getVoices()
-      setVoices(all.filter(v => v.lang.startsWith('en')))
-    }
-    load()
-    speechSynthesis.onvoiceschanged = load
-    return () => { speechSynthesis.onvoiceschanged = null }
-  }, [])
 
   if (!book) return null
 
@@ -158,23 +154,22 @@ export default function BookDetailScreen() {
                   Narration voice
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {voices.length > 0 ? 'Using your device\'s built-in voice' : 'Device default voice'}
+                  Microsoft Edge neural voices · no API key required
                 </div>
               </div>
             </div>
-            {voices.length > 0 && (
-              <select
-                className="voice-select"
-                style={{ width: '100%', marginLeft: 0 }}
-                value={book.voice || ''}
-                onChange={e => handleVoiceChange(e.target.value)}
-              >
-                <option value="">System default</option>
-                {voices.map(v => (
-                  <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>
-                ))}
-              </select>
-            )}
+            <select
+              className="voice-select"
+              style={{ width: '100%', marginLeft: 0 }}
+              value={book.voice || 'en-US-JennyNeural'}
+              onChange={e => handleVoiceChange(e.target.value)}
+            >
+              {VOICES.map(v => (
+                <option key={v.id} value={v.id}>
+                  {v.name} · {v.accent} · {v.gender}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 

@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { db } from '../db/db'
 import { AudioPlayer, computeWaveform, findActiveWord, fmtTime } from '../lib/audioPlayer'
-import { SpeechPlayer } from '../lib/speechPlayer'
+import { EdgeTtsPlayer } from '../lib/edgeTtsPlayer'
 import { useSettings, getSetting } from '../utils/settings'
 
 const STATIC_WAVE = [0.3,0.55,0.7,0.5,0.85,0.4,0.65,0.9,0.45,0.75,0.55,0.8,0.35,0.6,0.95,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.8,0.35,0.65,0.9,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.35,0.65,0.5,0.4,0.3]
@@ -139,7 +139,7 @@ export default function ReaderScreen() {
     })
   }, [audioChunk?.id, book?.mode])
 
-  // ── SpeechPlayer lifecycle (listen mode — no pre-generated audio needed) ──
+  // ── EdgeTtsPlayer lifecycle (listen mode — no pre-generated audio needed) ──
   useEffect(() => {
     if (book?.mode !== 'listen') {
       // Clean up speech player if mode was switched away from listen
@@ -153,7 +153,7 @@ export default function ReaderScreen() {
     }
     if (!chapter?.text) return
 
-    const sp = new SpeechPlayer()
+    const sp = new EdgeTtsPlayer()
 
     sp.onWordBoundary = absCharIdx => {
       for (const para of paraTokensRef.current) {
