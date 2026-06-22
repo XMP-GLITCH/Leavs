@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   const safeVoice = VALID_VOICES.has(voice) ? voice : 'en-US-JennyNeural'
 
   try {
-    const { default: EdgeTTS } = await import('edge-tts-universal')
+    const { EdgeTTS } = await import('edge-tts-universal')
 
     const tts                  = new EdgeTTS(text, safeVoice)
     const { audio, subtitle }  = await tts.synthesize()

@@ -21,7 +21,7 @@ router.post('/generate', async (req, res) => {
   if (!bookId || chapterId === undefined) return res.status(400).json({ error: 'bookId and chapterId are required' })
 
   try {
-    const { default: EdgeTTS } = await import('edge-tts-universal')
+    const { EdgeTTS } = await import('edge-tts-universal')
 
     const tts = new EdgeTTS(text, voice)
     const { audio, subtitle } = await tts.synthesize()
