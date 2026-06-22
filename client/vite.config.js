@@ -40,6 +40,10 @@ export default defineConfig({
       },
     }),
   ],
+  optimizeDeps: {
+    // pdfjs-dist ships ESM already; pre-bundling it breaks the ?url worker import
+    exclude: ['pdfjs-dist'],
+  },
   server: {
     proxy: {
       '/api': 'http://localhost:3001',
