@@ -29,16 +29,28 @@ async function parseTXT(file) {
 // ── PDF ──────────────────────────────────────────────────────────────────────
 async function parsePDF(file, onProgress) {
   onProgress?.('Loading PDF reader…')
-  const pdfjs = await import('pdfjs-dist')
 
-  // Worker served from same origin (client/public/) — no CDN, works offline
+  let pdfjsMod
+  try { pdfjsMod = await import('pdfjs-dist') }
+  catch (e) { throw new Error(`Could not load PDF reader: ${e.message}`) }
+
+  // pdfjs-dist v6 uses named exports; .default fallback handles bundler wrapping
+  const pdfjs = pdfjsMod.default ?? pdfjsMod
+
+  if (typeof pdfjs.getDocument !== 'function')
+    throw new Error(`PDF reader loaded incorrectly (getDocument=${typeof pdfjs.getDocument}) — try a TXT file instead`)
+
+  // Worker served from same origin (public/) — no CDN, works offline
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   onProgress?.('Reading PDF…')
-  const arrayBuffer = await file.arrayBuffer()
-  const pdf  = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
-  const meta = await pdf.getMetadata().catch(() => ({}))
+  let pdf
+  try {
+    const arrayBuffer = await file.arrayBuffer()
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+  } catch (e) { throw new Error(`Failed to read PDF: ${e.message}`) }
 
+  const meta   = await pdf.getMetadata().catch(() => ({}))
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
   const author = meta.info?.Author || 'Unknown'
 
@@ -56,26 +68,41 @@ async function parsePDF(file, onProgress) {
 // ── EPUB ─────────────────────────────────────────────────────────────────────
 async function parseEPUB(file, onProgress) {
   onProgress?.('Loading EPUB reader…')
-  const epubMod = await import('epubjs')
-  const ePub    = epubMod.default ?? epubMod
 
-  if (typeof ePub !== 'function') throw new Error('epub.js failed to load — try a PDF or TXT instead')
+  let epubMod
+  try { epubMod = await import('epubjs') }
+  catch (e) { throw new Error(`Could not load EPUB reader: ${e.message}`) }
 
-  onProgress?.('Reading EPUB…')
-  const arrayBuffer = await file.arrayBuffer()
-  const book = ePub(arrayBuffer)
-  await book.ready
+  const ePub = epubMod.default ?? epubMod
+  if (typeof ePub !== 'function')
+    throw new Error(`EPUB reader loaded incorrectly (type=${typeof ePub}) — try a TXT file instead`)
 
-  const meta   = await book.loaded.metadata
+  onProgress?.('Opening EPUB…')
+  let book
+  try {
+    const arrayBuffer = await file.arrayBuffer()
+    book = ePub(arrayBuffer)
+    await book.ready
+  } catch (e) { throw new Error(`Failed to open EPUB: ${e.message}`) }
+
+  onProgress?.('Reading metadata…')
+  let meta = {}
+  try { meta = await book.loaded.metadata } catch { /* use defaults */ }
+
   const title  = meta.title   || file.name.replace(/\.[^.]+$/, '')
   const author = meta.creator || 'Unknown'
 
-  await book.spine.ready.catch(() => {})
-  const spineItems = book.spine.spineItems ?? book.spine.items ?? []
+  onProgress?.('Reading chapters…')
+  let spineItems = []
+  try {
+    await book.spine.ready.catch(() => {})
+    spineItems = book.spine.spineItems ?? book.spine.items ?? []
+  } catch (e) { throw new Error(`Failed to read EPUB spine: ${e.message}`) }
 
   const chapters = []
   for (const item of spineItems) {
     try {
+      if (typeof item.load !== 'function') continue
       const doc  = await item.load(book.load.bind(book))
       if (!doc) continue
       const body = doc.body ?? doc.documentElement
@@ -97,11 +124,14 @@ async function parseEPUB(file, onProgress) {
 
 // ── Main entry ───────────────────────────────────────────────────────────────
 export async function ingestFile(file, onProgress) {
-  const ext = file.name.split('.').pop().toLowerCase()
+  const ext = (file.name.split('.').pop() ?? '').toLowerCase()
 
   // 90-second hard timeout — prevents infinite spinner on mobile
   const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('Import timed out — file may be too large. Try a smaller file or TXT format.')), 90_000)
+    setTimeout(
+      () => reject(new Error('Import timed out — try a smaller file or TXT format.')),
+      90_000
+    )
   )
 
   async function doIngest() {
@@ -132,7 +162,7 @@ export async function ingestFile(file, onProgress) {
         text:        parsed.chapters[i].text,
         audioStatus: 'none',
       })
-      onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
+      if (i % 5 === 0) onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
     }
 
     return bookId
