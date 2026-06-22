@@ -35,11 +35,12 @@ export default function ReaderScreen() {
   const [activeNav,      setActiveNav]      = useState('annotate')
   const [showNotesPanel, setShowNotesPanel] = useState(false)
   const [vocabWord,      setVocabWord]      = useState(null)
-  const [vocabPi,        setVocabPi]        = useState(null)   // paragraph index of tapped word
+  const [vocabPi,        setVocabPi]        = useState(null)
   const [vocabDef,       setVocabDef]       = useState(null)
   const [vocabLoading,   setVocabLoading]   = useState(false)
   const [showHlPanel,    setShowHlPanel]    = useState(false)
   const [selectedText,   setSelectedText]   = useState('')
+  const [floatingHl,    setFloatingHl]     = useState(null)  // { text, x, y }
   const [noteText,       setNoteText]       = useState('')
   const [hlColor,        setHlColor]        = useState('hl-y')
 
@@ -230,20 +231,33 @@ export default function ReaderScreen() {
     navigate(`/book/${id}/read?chapter=${idx}`)
   }
 
-  // ── Unified tap / selection handler ─────────────────────────────────────
-  // • Selection exists → open highlight panel (any free-form selection)
-  // • No selection, tapped a word span → open vocab popup
-  function handleInteractionEnd(e) {
-    const sel = window.getSelection()?.toString().trim()
-    if (sel && sel.length > 1) {
-      window.getSelection()?.removeAllRanges()
-      setSelectedText(sel)
-      setVocabWord(null)
-      setVocabPi(null)
-      setShowHlPanel(true)
-      return
+  // ── Floating highlight button (selectionchange — works on iOS) ───────────
+  useEffect(() => {
+    function onSelectionChange() {
+      if (showHlPanel) return
+      const sel  = window.getSelection()
+      const text = sel?.toString().trim()
+      if (!text || text.length < 2 || !sel.rangeCount) { setFloatingHl(null); return }
+      // Only show for selections inside the reader body
+      const range    = sel.getRangeAt(0)
+      const readerEl = document.querySelector('.rdrbody')
+      if (!readerEl?.contains(range.commonAncestorContainer)) { setFloatingHl(null); return }
+      const rect = range.getBoundingClientRect()
+      setFloatingHl({
+        text,
+        x: Math.min(Math.max(rect.left + rect.width / 2, 60), window.innerWidth - 60),
+        y: Math.max(rect.top, 60),
+      })
     }
-    // No selection — was a word span tapped?
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => document.removeEventListener('selectionchange', onSelectionChange)
+  }, [showHlPanel])
+
+  // ── Word tap handler (selection → floating button; tap → vocab) ──────────
+  function handleInteractionEnd(e) {
+    // If there's an active selection, the floating button handles it — do nothing
+    if (window.getSelection()?.toString().trim().length > 0) return
+    // Quick tap on a word span → vocab popup
     const wordEl = e.target.closest?.('[data-wi]')
     if (!wordEl) return
     const wi  = Number(wordEl.dataset.wi)
@@ -269,6 +283,7 @@ export default function ReaderScreen() {
     setShowHlPanel(false)
     setSelectedText('')
     setNoteText('')
+    setFloatingHl(null)
   }
 
   // ── Bookmark ─────────────────────────────────────────────────────────────
@@ -515,6 +530,26 @@ export default function ReaderScreen() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ── Floating highlight button (appears above active text selection) ── */}
+      {floatingHl && !showHlPanel && (
+        <div
+          className="floating-hl-btn"
+          style={{ left: floatingHl.x, top: floatingHl.y }}
+          onPointerDown={e => {
+            e.preventDefault()           // prevent clearing the selection on tap
+            const text = floatingHl.text
+            window.getSelection()?.removeAllRanges()
+            setFloatingHl(null)
+            setSelectedText(text)
+            setVocabWord(null)
+            setShowHlPanel(true)
+          }}
+        >
+          <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+          Highlight
+        </div>
       )}
 
       {/* ── Audio player ── */}
