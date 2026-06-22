@@ -103,12 +103,14 @@ async function parseEPUB(file, onProgress) {
   for (const item of spineItems) {
     try {
       if (typeof item.load !== 'function') continue
-      const doc  = await item.load(book.load.bind(book))
-      if (!doc) continue
-      const body = doc.body ?? doc.documentElement
-      const text = body?.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+      const el = await item.load(book.load.bind(book))
+      if (!el) continue
+      // Section.load resolves with xml.documentElement (an Element, not a Document)
+      // Use the element's textContent and querySelector directly
+      const node = (el.nodeType === 9 ? el.body ?? el.documentElement : el) ?? el
+      const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim()
       if (text.length < 80) continue
-      const heading = doc.querySelector?.('h1,h2,h3')?.textContent?.trim()
+      const heading = node.querySelector?.('h1,h2,h3')?.textContent?.trim()
       chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
     } catch { continue }
   }
