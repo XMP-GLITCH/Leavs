@@ -22,7 +22,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,woff2}'],
         clientsClaim: true,
         skipWaiting:  false,
         runtimeCaching: [
@@ -40,10 +40,6 @@ export default defineConfig({
       },
     }),
   ],
-  optimizeDeps: {
-    // pdfjs-dist ships ESM already; pre-bundling it breaks the ?url worker import
-    exclude: ['pdfjs-dist'],
-  },
   server: {
     proxy: {
       '/api': 'http://localhost:3001',

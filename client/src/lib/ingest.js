@@ -1,8 +1,5 @@
 import { db } from '../db/db'
 
-// Vite resolves this at build time → worker served locally, no CDN needed at runtime
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-
 // ── Chapter detection ────────────────────────────────────────────────────────
 const CH_BREAK = /^(?:chapter|ch\.?|part|section|book)\s+(?:\d+|[ivxlcdm]+)[^\n]*/im
 
@@ -34,8 +31,8 @@ async function parsePDF(file, onProgress) {
   onProgress?.('Loading PDF reader…')
   const pdfjs = await import('pdfjs-dist')
 
-  // Use locally-bundled worker — no CDN call, works offline
-  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+  // Worker served from same origin (client/public/) — no CDN, works offline
+  pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   onProgress?.('Reading PDF…')
   const arrayBuffer = await file.arrayBuffer()
