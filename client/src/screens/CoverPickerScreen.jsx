@@ -29,20 +29,43 @@ function buildExcerpt(chapters) {
   return [start, mid, ending].filter(Boolean).join('\n\n[...]\n\n').trim()
 }
 
-// Pollinations.ai — free, no API key needed, FLUX model
-// AbortController used instead of AbortSignal.timeout() for iOS <16 compat
+// Generic scene descriptions used when the server/Gemini isn't available
+function clientFallbackScenes(title) {
+  return [
+    `Flat clean minimal illustration: abstract geometric shapes and symbols representing the subject matter of "${title}". No people. Muted professional colour palette.`,
+    `Minimal graphic design: bold simple icon or object relevant to "${title}" on a clean background. No humans, no faces. Solid modern aesthetic.`,
+    `Abstract visual composition: textured shapes, patterns, and colours evoking the tone of "${title}". No figures, no people. Contemporary design.`,
+    `Clean diagrammatic illustration: symbolic object or environment from "${title}". No people, no faces, no silhouettes. Precise lines, professional layout.`,
+  ]
+}
+
+// AbortController instead of AbortSignal.timeout() — iOS 16+ only
+function fetchWithTimeout(url, opts, ms) {
+  const ctrl  = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer))
+}
+
+// Try HF FLUX via serverless function first, fall back to Pollinations (free, no key)
 async function generateImage(title, scene, seed) {
   const fullPrompt = `${scene} No people, no faces, no human figures, no silhouettes. No text, no letters, no words. Professional book cover art, portrait orientation, publishable quality.`
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux`
-  const ctrl  = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 90_000)
+
+  // ── 1. Try HF FLUX via serverless (needs HF_TOKEN in Vercel env vars) ──
   try {
-    const res = await fetch(url, { signal: ctrl.signal })
-    if (!res.ok) throw new Error(`Pollinations ${res.status}`)
-    return blobToDataUrl(await res.blob())
-  } finally {
-    clearTimeout(timer)
-  }
+    const res = await fetchWithTimeout(
+      '/api/covers/image',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scene: fullPrompt, seed }) },
+      55_000
+    )
+    if (res.ok) return blobToDataUrl(await res.blob())
+    // 503 = token not configured; any error → fall through to Pollinations
+  } catch { /* fall through */ }
+
+  // ── 2. Fallback: Pollinations.ai (free, no key, same FLUX model) ──
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux`
+  const res = await fetchWithTimeout(url, {}, 90_000)
+  if (!res.ok) throw new Error(`Image generation failed (${res.status})`)
+  return blobToDataUrl(await res.blob())
 }
 
 export default function CoverPickerScreen() {
@@ -89,29 +112,37 @@ export default function CoverPickerScreen() {
       }
 
       // ── 2. Analyze book content to get 4 scene descriptions ──
-      const analyzeRes = await fetch('/api/covers/analyze', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ title: book.title, author: book.author, excerpt }),
-      })
-      const { scenes = [] } = await analyzeRes.json().catch(() => ({}))
+      //    Server may not be running (Vercel static deploy) — always have a fallback.
+      let scenes = []
+      try {
+        const analyzeRes = await fetchWithTimeout(
+          '/api/covers/analyze',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: book.title, author: book.author, excerpt }) },
+          12_000
+        )
+        const body = await analyzeRes.json().catch(() => ({}))
+        if (Array.isArray(body.scenes) && body.scenes.length) scenes = body.scenes
+      } catch { /* server not available */ }
 
-      // ── 3. Feed each scene description to HF FLUX ──
+      // Use client-side fallback scenes when server didn't return any
+      const effectiveScenes = scenes.length > 0 ? scenes : clientFallbackScenes(book.title)
+
+      // ── 3. Generate images (HF FLUX → Pollinations fallback per image) ──
       const seeds   = [42, 137, 512, 999]
       const results = await Promise.allSettled(
-        scenes.map((scene, i) => generateImage(book.title, scene, seeds[i]))
+        effectiveScenes.map((scene, i) => generateImage(book.title, scene, seeds[i]))
       )
       const covers  = results.filter(r => r.status === 'fulfilled').map(r => r.value)
 
       if (!covers.length) {
         const firstErr = results.find(r => r.status === 'rejected')?.reason
-        throw new Error(firstErr?.message || 'All cover generations failed.')
+        throw new Error(firstErr?.message || 'All cover generations failed — check your internet connection.')
       }
 
       setAiCovers(covers)
       setSelected('ai-0')
       setAiSelected(covers[0])
-      setAiSource('huggingface')
+      setAiSource('pollinations')
     } catch (err) {
       setAiError(err.message)
     } finally {
