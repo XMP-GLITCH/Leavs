@@ -35,6 +35,7 @@ export default function ReaderScreen() {
   const [activeNav,      setActiveNav]      = useState('annotate')
   const [showNotesPanel, setShowNotesPanel] = useState(false)
   const [vocabWord,      setVocabWord]      = useState(null)
+  const [vocabPi,        setVocabPi]        = useState(null)   // paragraph index of tapped word
   const [vocabDef,       setVocabDef]       = useState(null)
   const [vocabLoading,   setVocabLoading]   = useState(false)
   const [showHlPanel,    setShowHlPanel]    = useState(false)
@@ -235,6 +236,7 @@ export default function ReaderScreen() {
     if (text && text.length > 1) {
       setSelectedText(text)
       setVocabWord(null)
+      setVocabPi(null)
       setShowHlPanel(true)
     }
   }
@@ -430,7 +432,7 @@ export default function ReaderScreen() {
                       key={ti}
                       data-wi={t.i}
                       className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}`}
-                      onClick={() => setVocabWord(t.tok)}
+                      onClick={() => { setVocabWord(t.tok); setVocabPi(pi) }}
                     >
                       {t.tok}
                     </span>
@@ -459,11 +461,11 @@ export default function ReaderScreen() {
       {/* ── Vocab popup ── */}
       {vocabWord && !showHlPanel && (
         <>
-          <div style={{ position: 'fixed', inset: 0, zIndex: 24 }} onClick={() => setVocabWord(null)} />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 24 }} onClick={() => { setVocabWord(null); setVocabPi(null) }} />
           <div className="vocab-pop">
             <div className="vocab-hdr">
               <div className="vw">{vocabWord}</div>
-              <button className="vocab-close-btn" onClick={() => setVocabWord(null)} aria-label="Close">
+              <button className="vocab-close-btn" onClick={() => { setVocabWord(null); setVocabPi(null) }} aria-label="Close">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
@@ -485,16 +487,32 @@ export default function ReaderScreen() {
                 setVocabWord(null)
               }}>
                 <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
-                Save to vocabulary
+                Save
               </div>
               <div className="vs vs--hl" onClick={() => {
                 const word = vocabWord
-                setVocabWord(null)
+                setVocabWord(null); setVocabPi(null)
                 setSelectedText(word)
                 setShowHlPanel(true)
               }}>
                 <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
-                Highlight
+                Word
+              </div>
+              <div className="vs vs--hl" onClick={() => {
+                const para = vocabPi != null ? paragraphTokens[vocabPi] : null
+                const wt   = (para?.tokens || []).filter(t => typeof t === 'object')
+                const text = wt.length
+                  ? chapter.text.slice(
+                      wt[0].charStart - (para.dropChar ? 1 : 0),
+                      wt[wt.length - 1].charEnd
+                    ).trim()
+                  : vocabWord
+                setVocabWord(null); setVocabPi(null)
+                setSelectedText(text)
+                setShowHlPanel(true)
+              }}>
+                <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /><line x1="4" y1="20" x2="20" y2="20" strokeWidth="2" /></svg>
+                Paragraph
               </div>
             </div>
           </div>
