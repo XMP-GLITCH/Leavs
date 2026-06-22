@@ -61,8 +61,9 @@ async function generateImage(title, scene, seed) {
     // 503 = token not configured; any error → fall through to Pollinations
   } catch { /* fall through */ }
 
-  // ── 2. Fallback: Pollinations.ai (free, no key, same FLUX model) ──
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux`
+  // ── 2. Fallback: Pollinations.ai (free, no key, FLUX model) ──
+  const negative = 'faces,humans,people,silhouettes,figures,body,portrait,person,text,words,letters,typography,watermark,logo,signature'
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=768&seed=${seed}&nologo=true&model=flux&negative=${encodeURIComponent(negative)}&enhance=true`
   const res = await fetchWithTimeout(url, {}, 90_000)
   if (!res.ok) throw new Error(`Image generation failed (${res.status})`)
   return blobToDataUrl(await res.blob())
