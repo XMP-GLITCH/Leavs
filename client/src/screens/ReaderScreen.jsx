@@ -798,8 +798,8 @@ export default function ReaderScreen() {
         </div>
       )}
 
-      {/* ── Audio player ── */}
-      <div className="player" style={{ position: 'relative' }}>
+      {/* ── Audio player — listen mode only ── */}
+      {isListenMode && <div className="player" style={{ position: 'relative' }}>
 
         {/* Badge — absolute top right */}
         <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
@@ -913,7 +913,7 @@ export default function ReaderScreen() {
             <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* ── Reader bottom nav ── */}
       <nav className="reader-nav">
