@@ -34,61 +34,14 @@ function OfflineBanner() {
 
 
 export default function App() {
-  // ── PWA update logic ───────────────────────────────────────────────────────
-  // skipWaiting:true means new SWs activate immediately — no "waiting" state,
-  // so needRefresh never fires. Instead we listen for controllerchange and reload.
-  useRegisterSW()
-
-  useEffect(() => {
-    if (!('serviceWorker' in navigator)) return
-
-    let reloading = false
-    function doReload() {
-      if (reloading) return
-      reloading = true
-      window.location.reload()
-    }
-
-    // controllerchange fires when a new SW takes control of this page
-    navigator.serviceWorker.addEventListener('controllerchange', doReload)
-
-    // Also watch the registration directly: updatefound → installing → activated
-    // This catches cases (installed PWA on iOS) where controllerchange is delayed
-    async function watchReg() {
-      try {
-        const reg = await navigator.serviceWorker.getRegistration()
-        if (!reg) return
-        reg.addEventListener('updatefound', () => {
-          const sw = reg.installing
-          if (!sw) return
-          sw.addEventListener('statechange', () => {
-            if (sw.state === 'activated') doReload()
-          })
-        })
-      } catch {}
-    }
-    watchReg()
-
-    // Poll for updates: 3 s after load, then every 10 min, and on tab focus.
-    async function checkForUpdate() {
-      try {
-        const reg = await navigator.serviceWorker.getRegistration()
-        await reg?.update()
-      } catch {}
-    }
-    const t  = setTimeout(checkForUpdate, 3000)
-    const iv = setInterval(checkForUpdate, 10 * 60 * 1000)
-    const onVisible = () => { if (document.visibilityState === 'visible') checkForUpdate() }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onVisible)
-
-    return () => {
-      navigator.serviceWorker.removeEventListener('controllerchange', doReload)
-      clearTimeout(t); clearInterval(iv)
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onVisible)
-    }
-  }, [])
+  // autoUpdate mode: vite-plugin-pwa handles skipWaiting + reload automatically.
+  // No manual controllerchange listener needed — adding one causes double-reloads.
+  useRegisterSW({
+    onRegisteredSW(_swUrl, r) {
+      // Check for updates every 30 minutes (not on every tab focus)
+      setInterval(() => r?.update(), 30 * 60 * 1000)
+    },
+  })
 
   // ── Install prompt ────────────────────────────────────────────────────────
   const [installPrompt, setInstallPrompt] = useState(null)
