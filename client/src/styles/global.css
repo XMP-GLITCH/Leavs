@@ -1189,7 +1189,25 @@ img { display: block; max-width: 100%; height: auto; }
   margin-bottom: 10px;
 }
 
-/* Controls */
+/* Controls — two-row layout */
+.pl-ctrl-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  margin-bottom: 10px;
+}
+
+.pl-ctrl-sec {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.skip-btn svg { width: 22px; height: 22px; }
+
+/* Legacy single-row (read-mode audio) */
 .pl-ctrl {
   display: flex;
   align-items: center;

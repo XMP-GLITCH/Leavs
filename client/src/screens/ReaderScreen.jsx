@@ -57,8 +57,10 @@ export default function ReaderScreen() {
   const [waveform,      setWaveform]      = useState(STATIC_WAVE)
   const [audioReady,    setAudioReady]    = useState(false)
   const [speedIdx,      setSpeedIdx]      = useState(2)
-  const [activeWordIdx, setActiveWordIdx] = useState(-1)
-  const [ttsError,      setTtsError]      = useState(null)
+  const [activeWordIdx,   setActiveWordIdx]   = useState(-1)
+  const [ttsError,        setTtsError]        = useState(null)
+  const [chapterAnnounce, setChapterAnnounce] = useState(null)
+  const [audioDevice,     setAudioDevice]     = useState('speaker')
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const playerRef         = useRef(null)
@@ -66,14 +68,23 @@ export default function ReaderScreen() {
   const scrollRestoredRef = useRef(false)
   const wordBoundariesRef = useRef([])
   // Custom text-selection refs (avoid stale closures inside addEventListener)
-  const paraTokensRef  = useRef([])
-  const selAnchorRef   = useRef(null)
-  const customSelRef   = useRef(null)
-  const longPressRef   = useRef(null)
-  const touchStartRef  = useRef(null)
+  const paraTokensRef     = useRef([])
+  const selAnchorRef      = useRef(null)
+  const customSelRef      = useRef(null)
+  const longPressRef      = useRef(null)
+  const touchStartRef     = useRef(null)
+  // Stale-closure guards for effects that capture reactive values
+  const isListenModeRef   = useRef(false)
+  const chapterIndexRef   = useRef(0)
+  const chapterCountRef   = useRef(0)
+  const chaptersRef       = useRef([])
+  const pendingAutoPlayRef = useRef(false)
 
   // ── Data ────────────────────────────────────────────────────────────────
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
+
+  // Keep refs in sync with reactive values (avoid stale closures in event handlers)
+
   const chapter  = useLiveQuery(
     () => db.chapters.where('bookId').equals(bookId).filter(c => c.index === chapterIndex).first(),
     [bookId, chapterIndex],
@@ -105,6 +116,26 @@ export default function ReaderScreen() {
     () => db.bookmarks.where('bookId').equals(bookId).sortBy('createdAt'),
     [bookId],
   )
+
+  // Sync refs used inside event-listener closures
+  useEffect(() => { isListenModeRef.current = book?.mode === 'listen' },  [book?.mode])
+  useEffect(() => { chapterIndexRef.current = chapterIndex },              [chapterIndex])
+  useEffect(() => { chapterCountRef.current = chapterCount },              [chapterCount])
+  useEffect(() => { chaptersRef.current     = chapters ?? [] },            [chapters])
+
+  // Audio output device detection
+  useEffect(() => {
+    const update = () => {
+      navigator.mediaDevices?.enumerateDevices().then(devs => {
+        const hasExternal = devs.some(d =>
+          d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== '')
+        setAudioDevice(hasExternal ? 'earbuds' : 'speaker')
+      }).catch(() => {})
+    }
+    update()
+    navigator.mediaDevices?.addEventListener('devicechange', update)
+    return () => navigator.mediaDevices?.removeEventListener('devicechange', update)
+  }, [])
 
   // ── AudioPlayer lifecycle ────────────────────────────────────────────────
   useEffect(() => {
@@ -176,6 +207,16 @@ export default function ReaderScreen() {
       setIsPlaying(false)
       setCurrentTime(0)
       setActiveWordIdx(-1)
+      const ci = chapterIndexRef.current
+      const cc = chapterCountRef.current
+      if (ci + 1 < cc) {
+        const nextCh   = chaptersRef.current?.find(c => c.index === ci + 1)
+        const announce = nextCh?.title || `Chapter ${ci + 2}`
+        setChapterAnnounce(announce)
+        setTimeout(() => setChapterAnnounce(null), 3500)
+        pendingAutoPlayRef.current = true
+        navigate(`/book/${id}/read?chapter=${ci + 1}`)
+      }
     }
 
     sp.onError = msg => {
@@ -192,8 +233,47 @@ export default function ReaderScreen() {
     setActiveWordIdx(-1)
     setIsPlaying(false)
 
+    // Auto-play when advancing chapters (session still active from previous playback)
+    if (pendingAutoPlayRef.current) {
+      pendingAutoPlayRef.current = false
+      setTimeout(() => { sp.play(); setIsPlaying(true) }, 300)
+    }
+
     return () => { sp.destroy(); speechPlayerRef.current = null }
   }, [chapter?.id, book?.mode, book?.voice])
+
+  // ── Media Session API (lock-screen / earphone controls) ─────────────────
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    if (book?.mode !== 'listen' || !chapter) return
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title:  chapter.title || `Chapter ${chapterIndex + 1}`,
+      artist: book.author  || 'Leavs',
+      album:  book.title   || '',
+    })
+  }, [chapter?.id, book?.mode])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    if (book?.mode !== 'listen') return
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
+    navigator.mediaSession.setActionHandler('play',          () => { speechPlayerRef.current?.play(); setIsPlaying(true) })
+    navigator.mediaSession.setActionHandler('pause',         () => { speechPlayerRef.current?.pause(); setIsPlaying(false) })
+    navigator.mediaSession.setActionHandler('nexttrack',     () => goToChapter(chapterIndexRef.current + 1))
+    navigator.mediaSession.setActionHandler('previoustrack', () => goToChapter(chapterIndexRef.current - 1))
+    navigator.mediaSession.setActionHandler('seekforward',   ({ seekOffset }) => {
+      const sp = speechPlayerRef.current
+      if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(sp._charPos + d) }
+    })
+    navigator.mediaSession.setActionHandler('seekbackward',  ({ seekOffset }) => {
+      const sp = speechPlayerRef.current
+      if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(Math.max(0, sp._charPos - d)) }
+    })
+    return () => {
+      ['play','pause','nexttrack','previoustrack','seekforward','seekbackward']
+        .forEach(a => { try { navigator.mediaSession.setActionHandler(a, null) } catch {} })
+    }
+  }, [isPlaying, book?.mode])
 
   // ── Vocab definition fetch ───────────────────────────────────────────────
   useEffect(() => {
@@ -348,13 +428,20 @@ export default function ReaderScreen() {
       const elapsed = Date.now() - (start?.t ?? 0)
       const moved   = start && Math.hypot(ct.clientX - start.x, ct.clientY - start.y) > 10
       touchStartRef.current = null
-      // Quick tap while not in selection mode → open vocab
+      // Quick tap while not in selection mode
       if (elapsed < 480 && !moved && !customSelRef.current) {
         const wi = wiAt(ct.clientX, ct.clientY)
         if (wi == null) return
         for (const para of paraTokensRef.current) {
           const tok = para.tokens.find(t => typeof t === 'object' && t.i === wi)
-          if (tok) { setVocabWord(tok.tok); setVocabPi(para.pi); break }
+          if (!tok) continue
+          if (isListenModeRef.current) {
+            // In listen mode: tap word → seek to that position
+            speechPlayerRef.current?.seek(tok.charStart)
+          } else {
+            setVocabWord(tok.tok); setVocabPi(para.pi)
+          }
+          break
         }
       }
     }
@@ -369,14 +456,20 @@ export default function ReaderScreen() {
     }
   }, [chapter?.id])   // re-run when chapter mounts so .rdrbody exists in DOM
 
-  // Desktop: click on word → vocab (touch handled by addEventListener above)
+  // Desktop: click on word → seek (listen mode) or vocab (read mode)
   function handleMouseUp(e) {
     const wordEl = e.target.closest?.('[data-wi]')
     if (!wordEl) return
     const wi = Number(wordEl.dataset.wi)
     for (const para of paragraphTokens) {
       const tok = para.tokens.find(t => typeof t === 'object' && t.i === wi)
-      if (tok) { setVocabWord(tok.tok); setVocabPi(para.pi); break }
+      if (!tok) continue
+      if (isListenMode && audioReady) {
+        speechPlayerRef.current?.seek(tok.charStart)
+      } else {
+        setVocabWord(tok.tok); setVocabPi(para.pi)
+      }
+      break
     }
   }
 
@@ -715,16 +808,24 @@ export default function ReaderScreen() {
             <h4>{book.title}</h4>
             <p>{chapter.title || `Ch. ${chapterIndex + 1}`}</p>
           </div>
-          {isListenMode
-            ? audioReady
-              ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
-              : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
-            : audioReady
-              ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
-              : chapter.audioStatus === 'ready'
-                ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
-                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
-          }
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            {isListenMode
+              ? audioReady
+                ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
+                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
+              : audioReady
+                ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
+                : chapter.audioStatus === 'ready'
+                  ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
+                  : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
+            }
+            {isListenMode && audioDevice === 'earbuds' && (
+              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.45)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="2" strokeLinecap="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+                EARBUDS
+              </div>
+            )}
+          </div>
         </div>
 
         <div
@@ -755,16 +856,13 @@ export default function ReaderScreen() {
           })()}
         </div>
 
-        <div className="pl-ctrl">
-          <button className="ctrl" aria-label="Skip back 15s" onClick={() => handleSkip(-15)}>
-            <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)">
-              <path d="M12.5 5C8.4 5 5 8.4 5 12.5H3L6.3 16l3.3-3.5H7.5C7.5 9.5 9.8 7 12.8 7s5.3 2.5 5.3 5.5-2.3 5.5-5.3 5.5c-1.7 0-3.1-.7-4.1-1.9l-1.4 1.4C8.7 19 10.6 20 12.8 20c4.1 0 7.2-3.4 7.2-7.5S16.9 5 12.5 5z" />
-              <text x="9.5" y="14.5" fontSize="5" fontFamily="DM Sans,sans-serif" fill="rgba(255,255,255,0.65)" fontWeight="600">15</text>
+        {/* Main controls: ◀10  PLAY  10▶ */}
+        <div className="pl-ctrl-main">
+          <button className="ctrl skip-btn" aria-label="Back 10s" onClick={() => handleSkip(-10)}>
+            <svg viewBox="0 0 24 24">
+              <path fill="rgba(255,255,255,0.75)" d="M12.5 5C8.4 5 5 8.4 5 12.5H3L6.3 16l3.3-3.5H7.5C7.5 9.5 9.8 7 12.8 7s5.3 2.5 5.3 5.5-2.3 5.5-5.3 5.5c-1.7 0-3.1-.7-4.1-1.9l-1.4 1.4C8.7 19 10.6 20 12.8 20c4.1 0 7.2-3.4 7.2-7.5S16.9 5 12.5 5z" />
+              <text x="9.5" y="14.5" fontSize="5" fontFamily="system-ui,sans-serif" fill="rgba(255,255,255,0.75)" fontWeight="700">10</text>
             </svg>
-          </button>
-
-          <button className="ctrl" aria-label="Previous chapter" onClick={() => goToChapter(chapterIndex - 1)} style={{ opacity: hasPrev ? 1 : 0.3 }}>
-            <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" /></svg>
           </button>
 
           <button
@@ -779,8 +877,18 @@ export default function ReaderScreen() {
             }
           </button>
 
-          <button className="ctrl" aria-label="Next chapter" onClick={() => goToChapter(chapterIndex + 1)} style={{ opacity: hasNext ? 1 : 0.3 }}>
-            <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+          <button className="ctrl skip-btn" aria-label="Forward 10s" onClick={() => handleSkip(10)}>
+            <svg viewBox="0 0 24 24">
+              <path fill="rgba(255,255,255,0.75)" d="M11.5 5C15.6 5 19 8.4 19 12.5h2l-3.3 3.5-3.3-3.5h2c0-2.5-2.3-5-5.3-5S5.8 9.5 5.8 12s2.3 5.5 5.3 5.5c1.7 0 3.1-.7 4.1-1.9l1.4 1.4C15.3 19 13.4 20 11.2 20c-4.1 0-7.2-3.4-7.2-7.5S7.1 5 11.5 5z" />
+              <text x="9.5" y="14.5" fontSize="5" fontFamily="system-ui,sans-serif" fill="rgba(255,255,255,0.75)" fontWeight="700">10</text>
+            </svg>
+          </button>
+        </div>
+
+        {/* Secondary controls: |◀  speed  sleep  ▶| */}
+        <div className="pl-ctrl-sec">
+          <button className="ctrl" aria-label="Previous chapter" onClick={() => goToChapter(chapterIndex - 1)} style={{ opacity: hasPrev ? 1 : 0.25 }}>
+            <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" /></svg>
           </button>
 
           <button className="spdbadge" onClick={handleSpeedToggle} aria-label="Playback speed">
@@ -790,12 +898,16 @@ export default function ReaderScreen() {
           <button
             className={`ctrl sleep-ctrl${sleepEnd ? ' sleep-ctrl--on' : ''}`}
             onClick={handleSleepTimer}
-            aria-label={sleepEnd ? 'Cancel sleep timer' : 'Start sleep timer'}
+            aria-label={sleepEnd ? 'Cancel sleep timer' : 'Set sleep timer'}
           >
             {sleepEnd
               ? <span className="sleep-remaining">{Math.ceil(sleepRemaining / 60)}m</span>
               : <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.55)"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
             }
+          </button>
+
+          <button className="ctrl" aria-label="Next chapter" onClick={() => goToChapter(chapterIndex + 1)} style={{ opacity: hasNext ? 1 : 0.25 }}>
+            <svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.65)"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
           </button>
         </div>
       </div>
@@ -906,6 +1018,18 @@ export default function ReaderScreen() {
             )}
           </div>
         </>
+      )}
+
+      {/* Chapter advance announcement */}
+      {chapterAnnounce && (
+        <div style={{
+          position: 'fixed', bottom: 100, left: '50%', transform: 'translateX(-50%)',
+          background: 'var(--moss)', color: '#fff', borderRadius: 10, padding: '10px 20px',
+          fontSize: 13, fontWeight: 600, zIndex: 9999, maxWidth: '90vw', textAlign: 'center',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.35)', letterSpacing: '0.02em',
+        }}>
+          Now playing · {chapterAnnounce}
+        </div>
       )}
 
       {/* TTS error toast */}

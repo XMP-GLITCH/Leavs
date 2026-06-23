@@ -1,30 +1,24 @@
-// EdgeTtsPlayer — chunk-based audiobook reader using Microsoft Edge neural voices.
-// Splits chapter text into paragraphs, fetches each from /api/tts/chunk, and plays
-// them in sequence using Web Audio API. Fires karaoke word-boundary events.
-
-const CHUNK_LIMIT  = 1400  // max chars per API request (keeps response well under 4 MB)
-const PREFETCH_N   = 3     // how many chunks to prefetch ahead
+const CHUNK_LIMIT = 1400
+const PREFETCH_N  = 3
 
 export class EdgeTtsPlayer {
   constructor() {
-    this._text      = ''
-    this._voice     = 'en-US-JennyNeural'
-    this._rate      = 1.0
-    this._chunks      = []       // { text, charStart }[]
-    this._cache       = {}       // chunk index → Promise<{ buffer: AudioBuffer, absWords }>
-    this._ctx         = null
-    this._src         = null     // current AudioBufferSourceNode
-    this._curChunk    = 0
-    this._charPos     = 0
-    this._startedAt   = 0        // AudioContext.currentTime when current chunk started
-    this._raf         = null
-    this._errCount    = 0        // consecutive fetch failures
+    this._text     = ''
+    this._voice    = 'en-US-JennyNeural'
+    this._rate     = 1.0
+    this._chunks   = []
+    this._cache    = {}        // index → Promise<{ blobUrl, absWords }>
+    this._audio    = null      // current HTMLAudioElement
+    this._curChunk = 0
+    this._charPos  = 0
+    this._raf      = null
+    this._errCount = 0
 
     this.isPlaying      = false
-    this.onWordBoundary = null   // (absCharIdx: number) => void
-    this.onTimeUpdate   = null   // (charPos: number, total: number) => void
-    this.onEnded        = null   // () => void
-    this.onError        = null   // (message: string) => void
+    this.onWordBoundary = null
+    this.onTimeUpdate   = null
+    this.onEnded        = null
+    this.onError        = null
   }
 
   load(text, voice = null) {
@@ -38,9 +32,8 @@ export class EdgeTtsPlayer {
     this.isPlaying = false
   }
 
-  async play() {
+  play() {
     if (this.isPlaying || !this._text) return
-    await this._getCtx().resume()
     this.isPlaying = true
     this._prefetch(this._curChunk)
     this._playFrom(this._curChunk)
@@ -48,33 +41,46 @@ export class EdgeTtsPlayer {
 
   pause() {
     if (!this.isPlaying) return
-    try { this._src?.stop() } catch {}
-    this._src = null
+    this._audio?.pause()
     this._stopRaf()
     this.isPlaying = false
   }
 
   seek(charPos) {
+    const ci  = this._chunkAt(charPos)
     const was = this.isPlaying
-    this.pause()
-    const ci = this._chunkAt(charPos)
+
+    // Fast path: seek within currently-playing chunk (no re-fetch)
+    if (ci === this._curChunk && this._audio && was) {
+      const { charStart, text: chunkText } = this._chunks[ci]
+      const localRatio = Math.max(0, (charPos - charStart) / (chunkText.length || 1))
+      const dur = this._audio.duration
+      if (dur && isFinite(dur)) {
+        this._audio.currentTime = localRatio * dur
+        this._charPos = charPos
+        this.onTimeUpdate?.(charPos, this._text.length)
+        return
+      }
+    }
+
+    // Full chunk switch
+    this._audio?.pause()
+    this._audio = null
+    this._stopRaf()
+    this.isPlaying = false
     this._curChunk = ci
     this._charPos  = charPos
     this.onTimeUpdate?.(charPos, this._text.length)
-    if (was) this.play()
+    if (was) {
+      this.isPlaying = true
+      this._prefetch(ci)
+      this._playFrom(ci)
+    }
   }
 
   setRate(rate) {
-    const was = this.isPlaying
-    if (was) {
-      const pos = this._charPos
-      this.pause()
-      this._charPos  = pos
-      this._curChunk = this._chunkAt(pos)
-    }
     this._rate = rate
-    if (this._src) this._src.playbackRate.value = rate
-    if (was) this.play()
+    if (this._audio) this._audio.playbackRate = rate
   }
 
   setVoice(voice) {
@@ -82,7 +88,7 @@ export class EdgeTtsPlayer {
     const pos = this._charPos
     if (was) this.pause()
     this._voice    = voice
-    this._cache    = {}   // invalidate cached audio — new voice needed
+    this._cache    = {}
     this._curChunk = this._chunkAt(pos)
     this._charPos  = pos
     if (was) this.play()
@@ -90,16 +96,9 @@ export class EdgeTtsPlayer {
 
   destroy() {
     this._stop()
-    this._ctx?.close().catch(() => {})
-    this._ctx = null
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
-
-  _getCtx() {
-    if (!this._ctx) this._ctx = new AudioContext()
-    return this._ctx
-  }
 
   _chunkAt(charPos) {
     let ci = 0
@@ -133,12 +132,12 @@ export class EdgeTtsPlayer {
       result = await this._cache[ci]
       this._errCount = 0
     } catch (err) {
-      console.error('[EdgeTTS] chunk load failed', err)
+      console.error('[EdgeTTS] chunk failed', err)
       this._errCount++
       if (this._errCount >= 3) {
         this.isPlaying = false
         this._stopRaf()
-        this.onError?.(`Audio failed to load: ${err.message}`)
+        this.onError?.(`Audio error: ${err.message}`)
         return
       }
       this._curChunk = ci + 1
@@ -147,60 +146,79 @@ export class EdgeTtsPlayer {
       return
     }
 
-    if (!this.isPlaying) return   // paused while loading
+    if (!this.isPlaying) return
 
-    const { buffer, absWords } = result
-    const ctx        = this._getCtx()
-    const chunkStart = this._chunks[ci].charStart
-    const chunkText  = this._chunks[ci].text
+    const { blobUrl, absWords } = result
+    const { charStart, text: chunkText } = this._chunks[ci]
 
-    const src              = ctx.createBufferSource()
-    src.buffer             = buffer
-    src.playbackRate.value = this._rate
-    src.connect(ctx.destination)
-    this._src        = src
-    this._startedAt  = ctx.currentTime
-    this._curChunk   = ci
+    const audio        = new Audio()
+    audio.src          = blobUrl
+    audio.playbackRate = this._rate
+    this._audio        = audio
+    this._curChunk     = ci
 
-    src.onended = () => {
+    audio.onended = () => {
+      URL.revokeObjectURL(blobUrl)
+      this._audio = null
+      this._stopRaf()
       if (!this.isPlaying) return
-      this._src = null
       this._curChunk++
       this._charPos = this._chunks[this._curChunk]?.charStart ?? this._text.length
       this._playFrom(this._curChunk)
     }
 
-    src.start()
-    this._startRaf(absWords, chunkStart, chunkText, buffer.duration)
+    audio.onerror = () => {
+      URL.revokeObjectURL(blobUrl)
+      this._audio = null
+      this._stopRaf()
+      this._errCount++
+      if (!this.isPlaying) return
+      if (this._errCount >= 3) {
+        this.isPlaying = false
+        this.onError?.('Audio playback failed')
+        return
+      }
+      this._curChunk++
+      this._charPos = this._chunks[this._curChunk]?.charStart ?? this._text.length
+      this._playFrom(this._curChunk)
+    }
+
+    try {
+      await audio.play()
+    } catch {
+      // Autoplay blocked — user must tap play again
+      this.isPlaying = false
+      return
+    }
+
+    this._startRaf(absWords, charStart, chunkText, audio)
   }
 
-  _startRaf(absWords, chunkStart, chunkText, bufDuration) {
+  _startRaf(absWords, chunkStart, chunkText, audio) {
     this._stopRaf()
-
-    let lastWordIdx = -1
+    let lastWi = -1
 
     const tick = () => {
-      if (!this.isPlaying || !this._src) return
+      if (!this.isPlaying || this._audio !== audio) return
 
-      const ctx          = this._getCtx()
-      const wallElapsed  = ctx.currentTime - this._startedAt
-      const audioElapsed = wallElapsed * this._rate   // how far through audio we are
+      const t = audio.currentTime
 
-      // Karaoke: find current word
+      // Karaoke word highlight
       let wi = -1
       for (let i = 0; i < absWords.length; i++) {
-        if (absWords[i].start <= audioElapsed) wi = i
+        if (absWords[i].start <= t) wi = i
         else break
       }
-      if (wi >= 0 && wi !== lastWordIdx) {
-        lastWordIdx = wi
+      if (wi >= 0 && wi !== lastWi) {
+        lastWi = wi
         this.onWordBoundary?.(absWords[wi].charIdx)
       }
 
-      // Progress: estimate char position within chunk
-      const ratio    = Math.min(1, bufDuration > 0 ? audioElapsed / bufDuration : 0)
-      const charPos  = chunkStart + Math.round(ratio * chunkText.length)
-      this._charPos  = charPos
+      // Progress bar position
+      const dur     = audio.duration || 1
+      const ratio   = Math.min(1, t / dur)
+      const charPos = chunkStart + Math.round(ratio * chunkText.length)
+      this._charPos = charPos
       this.onTimeUpdate?.(charPos, this._text.length)
 
       this._raf = requestAnimationFrame(tick)
@@ -214,8 +232,8 @@ export class EdgeTtsPlayer {
   }
 
   _stop() {
-    try { this._src?.stop() } catch {}
-    this._src = null
+    this._audio?.pause()
+    this._audio = null
     this._stopRaf()
     this.isPlaying = false
   }
@@ -235,17 +253,12 @@ export class EdgeTtsPlayer {
 
     const { audio: b64, wordBoundaries } = await res.json()
 
-    // Decode base64 MP3 → ArrayBuffer
     const bin    = atob(b64)
     const bytes  = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
 
-    const ctx    = this._getCtx()
-    const buffer = await ctx.decodeAudioData(bytes.buffer.slice(0))
-
-    // Map word boundaries to absolute char indices
-    const absWords = _mapToChars(wordBoundaries, text, charStart)
-    return { buffer, absWords }
+    return { blobUrl, absWords: _mapToChars(wordBoundaries, text, charStart) }
   }
 }
 
@@ -260,7 +273,6 @@ function _splitChunks(text) {
       chunks.push({ text: text.slice(pos), charStart: pos })
       break
     }
-    // Split at last paragraph break before the limit
     let split = text.lastIndexOf('\n\n', end)
     if (split <= pos) split = text.lastIndexOf(' ', end)
     if (split <= pos) split = end
@@ -271,8 +283,6 @@ function _splitChunks(text) {
   return chunks.filter(c => c.text.trim())
 }
 
-// Map word boundaries (with audio timing) to absolute char indices in chapter.text.
-// Edge TTS may include textOffset; if not, we match each word in order.
 function _mapToChars(boundaries, chunkText, chunkStart) {
   let searchPos = 0
   return (boundaries ?? []).map(b => {
@@ -280,7 +290,6 @@ function _mapToChars(boundaries, chunkText, chunkStart) {
     if (b.textOffset != null) {
       charIdx = b.textOffset + chunkStart
     } else {
-      // Walk through text finding each word in order (handles repeated words correctly)
       const idx = chunkText.indexOf(b.word, searchPos)
       charIdx   = (idx >= 0 ? idx : searchPos) + chunkStart
       if (idx >= 0) searchPos = idx + b.word.length
