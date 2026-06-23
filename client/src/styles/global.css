@@ -1194,18 +1194,27 @@ img { display: block; max-width: 100%; height: auto; }
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 28px;
-  margin-bottom: 10px;
+  gap: 40px;
+  margin-bottom: 14px;
 }
 
 .pl-ctrl-sec {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 28px;
 }
 
-.skip-btn svg { width: 22px; height: 22px; }
+/* Skip ◀10 / 10▶ buttons */
+.skip-btn {
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.skip-btn svg { width: 28px; height: 28px; }
 
 /* Legacy single-row (read-mode audio) */
 .pl-ctrl {
@@ -1215,38 +1224,41 @@ img { display: block; max-width: 100%; height: auto; }
 }
 
 .ctrl {
-  width: 30px;
-  height: 30px;
+  width: 38px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
 }
 
-.ctrl svg { width: 18px; height: 18px; fill: rgba(255, 255, 255, 0.65); }
+.ctrl svg { width: 22px; height: 22px; fill: rgba(255, 255, 255, 0.65); }
 
 .playbtn {
-  width: 46px;
-  height: 46px;
+  width: 56px;
+  height: 56px;
   background: #fff;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
 }
 
-.playbtn svg { width: 18px; height: 18px; fill: var(--moss); margin-left: 2px; }
+.playbtn svg { width: 22px; height: 22px; fill: var(--moss); margin-left: 2px; }
 
 .spdbadge {
   font-family: 'DM Mono', monospace;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.65);
-  background: rgba(255, 255, 255, 0.1);
-  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.12);
+  padding: 7px 14px;
   border-radius: 20px;
   cursor: pointer;
+  min-width: 52px;
+  text-align: center;
 }
 
 /* ─── Reader-specific bottom nav ────────────────────────────────── */

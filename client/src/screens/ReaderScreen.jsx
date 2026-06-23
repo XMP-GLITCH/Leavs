@@ -799,7 +799,28 @@ export default function ReaderScreen() {
       )}
 
       {/* ── Audio player ── */}
-      <div className="player">
+      <div className="player" style={{ position: 'relative' }}>
+
+        {/* Badge — absolute top right */}
+        <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
+          {isListenMode
+            ? audioReady
+              ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
+              : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
+            : audioReady
+              ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
+              : chapter.audioStatus === 'ready'
+                ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
+                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
+          }
+          {isListenMode && audioDevice === 'earbuds' && (
+            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: 3 }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+              EARBUDS
+            </div>
+          )}
+        </div>
+
         <div className="pl-row">
           <div className="pl-mini-cover">
             {book.cover && <img src={book.cover} alt={book.title} />}
@@ -807,24 +828,6 @@ export default function ReaderScreen() {
           <div className="pl-info">
             <h4>{book.title}</h4>
             <p>{chapter.title || `Ch. ${chapterIndex + 1}`}</p>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-            {isListenMode
-              ? audioReady
-                ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
-                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
-              : audioReady
-                ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
-                : chapter.audioStatus === 'ready'
-                  ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
-                  : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
-            }
-            {isListenMode && audioDevice === 'earbuds' && (
-              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.45)', display: 'flex', alignItems: 'center', gap: 3 }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="2" strokeLinecap="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
-                EARBUDS
-              </div>
-            )}
           </div>
         </div>
 
