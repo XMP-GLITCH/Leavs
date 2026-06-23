@@ -10,19 +10,21 @@ export class EdgeTtsPlayer {
     this._text      = ''
     this._voice     = 'en-US-JennyNeural'
     this._rate      = 1.0
-    this._chunks    = []       // { text, charStart }[]
-    this._cache     = {}       // chunk index → Promise<{ buffer: AudioBuffer, absWords }>
-    this._ctx       = null
-    this._src       = null     // current AudioBufferSourceNode
-    this._curChunk  = 0
-    this._charPos   = 0
-    this._startedAt = 0        // AudioContext.currentTime when current chunk started
-    this._raf       = null
+    this._chunks      = []       // { text, charStart }[]
+    this._cache       = {}       // chunk index → Promise<{ buffer: AudioBuffer, absWords }>
+    this._ctx         = null
+    this._src         = null     // current AudioBufferSourceNode
+    this._curChunk    = 0
+    this._charPos     = 0
+    this._startedAt   = 0        // AudioContext.currentTime when current chunk started
+    this._raf         = null
+    this._errCount    = 0        // consecutive fetch failures
 
     this.isPlaying      = false
     this.onWordBoundary = null   // (absCharIdx: number) => void
     this.onTimeUpdate   = null   // (charPos: number, total: number) => void
     this.onEnded        = null   // () => void
+    this.onError        = null   // (message: string) => void
   }
 
   load(text, voice = null) {
@@ -36,9 +38,9 @@ export class EdgeTtsPlayer {
     this.isPlaying = false
   }
 
-  play() {
+  async play() {
     if (this.isPlaying || !this._text) return
-    this._getCtx().resume()
+    await this._getCtx().resume()
     this.isPlaying = true
     this._prefetch(this._curChunk)
     this._playFrom(this._curChunk)
@@ -129,9 +131,16 @@ export class EdgeTtsPlayer {
     let result
     try {
       result = await this._cache[ci]
+      this._errCount = 0
     } catch (err) {
       console.error('[EdgeTTS] chunk load failed', err)
-      // Skip this chunk and try the next one
+      this._errCount++
+      if (this._errCount >= 3) {
+        this.isPlaying = false
+        this._stopRaf()
+        this.onError?.(`Audio failed to load: ${err.message}`)
+        return
+      }
       this._curChunk = ci + 1
       this._charPos  = this._chunks[ci + 1]?.charStart ?? this._text.length
       this._playFrom(ci + 1)

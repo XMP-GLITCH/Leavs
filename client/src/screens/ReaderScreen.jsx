@@ -58,6 +58,7 @@ export default function ReaderScreen() {
   const [audioReady,    setAudioReady]    = useState(false)
   const [speedIdx,      setSpeedIdx]      = useState(2)
   const [activeWordIdx, setActiveWordIdx] = useState(-1)
+  const [ttsError,      setTtsError]      = useState(null)
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const playerRef         = useRef(null)
@@ -175,6 +176,12 @@ export default function ReaderScreen() {
       setIsPlaying(false)
       setCurrentTime(0)
       setActiveWordIdx(-1)
+    }
+
+    sp.onError = msg => {
+      setIsPlaying(false)
+      setTtsError(msg)
+      setTimeout(() => setTtsError(null), 6000)
     }
 
     sp.load(chapter.text, book?.voice || null)
@@ -899,6 +906,18 @@ export default function ReaderScreen() {
             )}
           </div>
         </>
+      )}
+
+      {/* TTS error toast */}
+      {ttsError && (
+        <div style={{
+          position: 'fixed', bottom: 90, left: '50%', transform: 'translateX(-50%)',
+          background: '#C0392B', color: '#fff', borderRadius: 8, padding: '10px 16px',
+          fontSize: 13, fontWeight: 500, zIndex: 9999, maxWidth: '90vw', textAlign: 'center',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+        }}>
+          {ttsError}
+        </div>
       )}
     </div>
   )
