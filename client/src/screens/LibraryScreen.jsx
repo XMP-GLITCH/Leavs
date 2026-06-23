@@ -45,7 +45,7 @@ function ShelfLeaf({ progress = 0 }) {
   )
 }
 
-function ShelfCard({ book, onClick }) {
+function RecentCard({ book, onClick }) {
   return (
     <div className="bcard" onClick={onClick} role="button" tabIndex={0}>
       <div className="bcover" style={{ background: book.cover ? undefined : book.coverStyle || bookGradient(book.title) }}>
@@ -57,6 +57,22 @@ function ShelfCard({ book, onClick }) {
       </div>
       <div className="btitle">{book.title}</div>
       <div className="bauthor">{book.author}</div>
+    </div>
+  )
+}
+
+function GridCard({ book, onClick }) {
+  return (
+    <div className="lgcard" onClick={onClick} role="button" tabIndex={0}>
+      <div className="lgcover" style={{ background: book.cover ? undefined : book.coverStyle || bookGradient(book.title) }}>
+        {book.cover
+          ? <img src={book.cover} alt="" />
+          : <div className="lginner">{book.title}<br /><small style={{ opacity: 0.7 }}>{book.author}</small></div>
+        }
+        <ShelfLeaf progress={book.progress || 0} />
+      </div>
+      <div className="lgtitle">{book.title}</div>
+      <div className="lgauthor">{book.author}</div>
     </div>
   )
 }
@@ -122,20 +138,18 @@ export default function LibraryScreen() {
     [],
   )
 
-  const currentBook = books?.find(b => (b.progress || 0) > 0 && (b.progress || 0) < 1)
-  const shelfBooks  = books?.filter(b => b !== currentBook) ?? []
+  const continueBook = books?.[0] ?? null
+  const recentBooks  = books?.slice(1, 7) ?? []
+  const gridBooks    = books ?? []
 
   async function handleFabAction(action) {
-    if (action === 'upload') {
-      fileInputRef.current?.click()
-    }
-    // import-audio and generate-audio — Phase 2
+    if (action === 'upload') fileInputRef.current?.click()
   }
 
   async function handleFileSelected(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    e.target.value = '' // allow re-selecting the same file
+    e.target.value = ''
 
     if (typeof ingestFile !== 'function') {
       setIngestState({ status: 'error', message: 'Upload module failed to load — please close and reopen the app.' })
@@ -148,7 +162,6 @@ export default function LibraryScreen() {
         setIngestState({ status: 'parsing', message: msg })
       )
       setIngestState(null)
-      // Skip cover picker if the file already contained a cover image
       navigate(hasCover ? `/book/${bookId}` : `/book/${bookId}/cover`)
     } catch (err) {
       console.error('[ingest]', err)
@@ -177,26 +190,46 @@ export default function LibraryScreen() {
         <span>Search books, authors…</span>
       </div>
 
-      {currentBook && (
+      {/* Continue Reading */}
+      {continueBook && (
         <>
           <div className="section-label" style={{ paddingTop: 10 }}>
-            <h3>Continue</h3>
+            <h3>Continue reading</h3>
           </div>
           <div style={{ padding: '0 24px' }}>
-            <ContinueCard book={currentBook} navigate={navigate} />
+            <ContinueCard book={continueBook} navigate={navigate} />
           </div>
         </>
       )}
 
-      {shelfBooks.length > 0 && (
+      {/* Recent — horizontal scroll */}
+      {recentBooks.length > 0 && (
         <>
-          <div className="section-label" style={{ marginTop: 14 }}>
-            <h3>All books</h3>
-            <a href="#">{shelfBooks.length} book{shelfBooks.length !== 1 ? 's' : ''}</a>
+          <div className="section-label" style={{ marginTop: 18 }}>
+            <h3>Recent</h3>
           </div>
           <div className="shelf">
-            {shelfBooks.map(book => (
-              <ShelfCard
+            {recentBooks.map(book => (
+              <RecentCard
+                key={book.id}
+                book={book}
+                onClick={() => navigate(`/book/${book.id}`)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Library grid — all books */}
+      {gridBooks.length > 0 && (
+        <>
+          <div className="section-label" style={{ marginTop: 18 }}>
+            <h3>Library</h3>
+            <a href="#">{gridBooks.length} book{gridBooks.length !== 1 ? 's' : ''}</a>
+          </div>
+          <div className="lib-grid">
+            {gridBooks.map(book => (
+              <GridCard
                 key={book.id}
                 book={book}
                 onClick={() => navigate(`/book/${book.id}`)}
@@ -213,7 +246,6 @@ export default function LibraryScreen() {
         </div>
       )}
 
-      {/* Hidden file input */}
       <input
         ref={fileInputRef}
         type="file"

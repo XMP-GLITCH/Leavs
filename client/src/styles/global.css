@@ -603,6 +603,74 @@ img { display: block; max-width: 100%; height: auto; }
   margin-top: 2px;
 }
 
+/* ─── Library Grid (2-col) ──────────────────────────────────────── */
+.lib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 14px;
+  padding: 0 24px 110px;
+}
+
+.lgcard {
+  cursor: pointer;
+}
+
+.lgcover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 3px 4px 12px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lgcover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lginner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  font-family: 'Playfair Display', serif;
+  font-size: 10px;
+  color: #fff;
+  text-align: center;
+  line-height: 1.4;
+  position: absolute;
+  inset: 0;
+}
+
+.lgtitle {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.lgauthor {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ─── Library Empty ─────────────────────────────────────────────── */
 .library-empty {
   padding: var(--space-16) var(--space-6);
