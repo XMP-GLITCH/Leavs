@@ -4,6 +4,37 @@ import { scrape, BROWSER } from '../_lib/proxy.js'
 
 const ALLOWED = new Set(['oceanofpdf.com', 'www.oceanofpdf.com', 'oceanpdf.com', 'www.oceanpdf.com'])
 
+function findDownloadUrl(html, pageUrl) {
+  // 1. Direct .pdf href
+  const pdf = html.match(/href="(https?:\/\/[^"]+\.pdf(?:[?#][^"]*)?)"/i)
+  if (pdf) return pdf[1]
+
+  // 2. Download / Get PDF button href
+  const btn = html.match(/href="([^"]+)"[^>]*>(?:<[^>]+>)*\s*(?:Download|Get PDF|PDF Download|Download PDF|Download Book)\s*/i)
+           || html.match(/class="[^"]*(?:download|dl-btn|pdf-btn)[^"]*"[^>]*href="([^"]+)"/i)
+  if (btn) {
+    const h = btn[1]
+    try { return new URL(h, pageUrl).href } catch { return null }
+  }
+
+  // 3. <a download> attribute
+  const dlAttr = html.match(/<a[^>]+\bdownload\b[^>]*href="([^"]+)"/i)
+              || html.match(/<a[^>]+href="([^"]+)"[^>]+\bdownload\b/i)
+  if (dlAttr) {
+    try { return new URL(dlAttr[1], pageUrl).href } catch { return null }
+  }
+
+  // 4. Google Drive, Dropbox, MediaFire, archive.org links
+  const external = html.match(/href="(https?:\/\/(?:drive\.google\.com|www\.dropbox\.com|www\.mediafire\.com|archive\.org\/download)[^"]+)"/i)
+  if (external) return external[1]
+
+  // 5. Any link with "download" in the path
+  const dlPath = html.match(/href="(https?:\/\/[^"]*\/download[^"]*)"/)
+  if (dlPath) return dlPath[1]
+
+  return null
+}
+
 export default async function handler(req, res) {
   const { url } = req.query
   if (!url) return res.status(400).json({ error: 'url required' })
@@ -12,7 +43,7 @@ export default async function handler(req, res) {
   try { parsed = new URL(url) } catch { return res.status(400).json({ error: 'invalid url' }) }
   if (!ALLOWED.has(parsed.hostname)) return res.status(403).json({ error: 'host not allowed' })
 
-  // ── Step 1: fetch book page through proxy ────────────────────────
+  // ── Step 1: fetch book page ──────────────────────────────────────
   let html
   try {
     html = await scrape(url, { referer: 'https://oceanofpdf.com/' })
@@ -20,39 +51,22 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: `Could not load page: ${err.message}` })
   }
 
-  // ── Step 2: find PDF URL ─────────────────────────────────────────
-  let pdfUrl = null
+  // ── Step 2: find download URL ────────────────────────────────────
+  const dlUrl = findDownloadUrl(html, url)
+  if (!dlUrl) return res.status(404).json({ error: 'No download link found on this page' })
 
-  const pdfHref = html.match(/href="(https?:\/\/[^"]+\.pdf(?:\?[^"]*)?)"/i)
-  if (pdfHref) pdfUrl = pdfHref[1]
-
-  if (!pdfUrl) {
-    const dlBtn = html.match(
-      /href="(https?:\/\/[^"]+)"[^>]*>(?:<[^>]+>)*\s*(?:Download|Get PDF|PDF Download|Download PDF)\s*(?:<\/[^>]+>)*/i
-    )
-    if (dlBtn) pdfUrl = dlBtn[1]
-  }
-
-  if (!pdfUrl) {
-    const dlAttr = html.match(/<a[^>]+\bdownload\b[^>]+href="(https?:\/\/[^"]+)"/i)
-                || html.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]+\bdownload\b/i)
-    if (dlAttr) pdfUrl = dlAttr[1]
-  }
-
-  if (!pdfUrl) return res.status(404).json({ error: 'No PDF link found on this page' })
-
-  // ── Step 3: stream PDF ───────────────────────────────────────────
+  // ── Step 3: stream file ──────────────────────────────────────────
   try {
-    const pdf = await fetch(pdfUrl, {
+    const file = await fetch(dlUrl, {
       headers: { ...BROWSER, Referer: url, 'Sec-Fetch-Site': 'cross-site' },
       redirect: 'follow',
     })
-    if (!pdf.ok) throw new Error(`PDF server returned ${pdf.status}`)
-    const buf = Buffer.from(await pdf.arrayBuffer())
-    res.setHeader('Content-Type', pdf.headers.get('content-type') || 'application/pdf')
+    if (!file.ok) throw new Error(`HTTP ${file.status}`)
+    const buf = Buffer.from(await file.arrayBuffer())
+    res.setHeader('Content-Type', file.headers.get('content-type') || 'application/pdf')
     res.setHeader('Content-Length', buf.length)
     res.status(200).send(buf)
   } catch (err) {
-    res.status(502).json({ error: `PDF download failed: ${err.message}` })
+    res.status(502).json({ error: `Download failed: ${err.message}` })
   }
 }
