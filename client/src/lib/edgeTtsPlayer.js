@@ -1,6 +1,21 @@
 const CHUNK_LIMIT = 1400
 const PREFETCH_N  = 3
 
+// iOS requires audio.play() to be called within a user gesture.
+// Since our play() → _playFrom() → fetch() → audio.play() chain is async,
+// we play a silent stub synchronously in play() to unlock audio for the session.
+let _sessionUnlocked = false
+function _unlockAudio() {
+  if (_sessionUnlocked) return
+  _sessionUnlocked = true
+  try {
+    // Shortest valid WAV (44-byte header + 0 samples)
+    const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=')
+    a.volume = 0
+    a.play().catch(() => { _sessionUnlocked = false })
+  } catch { _sessionUnlocked = false }
+}
+
 export class EdgeTtsPlayer {
   constructor() {
     this._text     = ''
@@ -35,6 +50,7 @@ export class EdgeTtsPlayer {
   play() {
     if (this.isPlaying || !this._text) return
     this.isPlaying = true
+    _unlockAudio()
     this._prefetch(this._curChunk)
     this._playFrom(this._curChunk)
   }

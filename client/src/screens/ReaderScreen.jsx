@@ -798,8 +798,8 @@ export default function ReaderScreen() {
         </div>
       )}
 
-      {/* ── Audio player — listen mode only ── */}
-      {isListenMode && <div className="player" style={{ position: 'relative' }}>
+      {/* ── Audio player — always visible in the viewport-trapped shell ── */}
+      {isListenMode && <div className="player">
 
         {/* Badge — absolute top right */}
         <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>

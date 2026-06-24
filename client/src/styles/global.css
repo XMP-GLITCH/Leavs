@@ -911,11 +911,16 @@ img { display: block; max-width: 100%; height: auto; }
 
 /* ─── Reader ────────────────────────────────────────────────────── */
 .reader-shell {
-  min-height: 100dvh;
+  /* Viewport-trapped layout: shell fills the screen, content scrolls inside */
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: max(0px, calc((100vw - 480px) / 2));
+  right: max(0px, calc((100vw - 480px) / 2));
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  padding-bottom: 0;
+  overflow: hidden;
 }
 
 .rdrhdr {
@@ -940,8 +945,10 @@ img { display: block; max-width: 100%; height: auto; }
 }
 
 .rdrbody {
-  padding: 6px 26px 240px;
   flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 26px 24px;
 }
 
 .dropcap {
@@ -979,7 +986,7 @@ img { display: block; max-width: 100%; height: auto; }
 /* Vocab popup */
 .vocab-pop {
   position: fixed;
-  bottom: calc(var(--reader-nav-height, 56px) + 190px);
+  bottom: 310px;
   left: 24px;
   right: 24px;
   max-width: calc(480px - 48px);
@@ -1168,15 +1175,13 @@ img { display: block; max-width: 100%; height: auto; }
 
 /* ─── Audio Player (persistent) ─────────────────────────────────── */
 .player {
-  position: sticky;
-  bottom: var(--reader-nav-height, 56px);
-  left: 0;
-  right: 0;
+  /* Natural flow in the viewport-trapped shell — always visible at bottom */
+  flex-shrink: 0;
+  position: relative;
   background: var(--moss);
-  border-radius: var(--radius-lg);
-  padding: 14px 18px;
-  margin: 0 var(--space-4);
-  box-shadow: 0 8px 32px rgba(45, 74, 45, 0.42);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: 14px 18px 10px;
+  box-shadow: 0 -4px 24px rgba(45, 74, 45, 0.35);
   z-index: 20;
 }
 
@@ -1331,12 +1336,9 @@ img { display: block; max-width: 100%; height: auto; }
 
 /* ─── Reader-specific bottom nav ────────────────────────────────── */
 .reader-nav {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Natural flow in the viewport-trapped shell */
+  flex-shrink: 0;
   width: 100%;
-  max-width: 480px;
   background: var(--bg-card);
   border-top: 1px solid var(--border-subtle);
   display: flex;
