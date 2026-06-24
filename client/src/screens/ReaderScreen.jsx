@@ -859,6 +859,20 @@ export default function ReaderScreen() {
           })()}
         </div>
 
+        {/* No-audio prompt — read mode with no pre-generated audio */}
+        {!isListenMode && !audioReady && (
+          <button
+            onClick={() => db.books.update(bookId, { mode: 'listen' })}
+            style={{
+              display: 'block', width: '100%', background: 'none', border: 'none',
+              color: 'var(--moss-light)', fontSize: 11, padding: '2px 0 10px',
+              cursor: 'pointer', textAlign: 'center', letterSpacing: '0.02em',
+            }}
+          >
+            No audio file — tap to use AI narration →
+          </button>
+        )}
+
         {/* Main controls: ◀10  PLAY  10▶ */}
         <div className="pl-ctrl-main">
           <button className="ctrl skip-btn" aria-label="Back 10s" onClick={() => handleSkip(-10)}>
