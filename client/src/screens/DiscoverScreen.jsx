@@ -108,8 +108,7 @@ export default function DiscoverScreen() {
       const blob = await res.blob()
       const filename = book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + '.epub'
       const file = new File([blob], filename, { type: 'application/epub+zip' })
-      const bookId = await ingestFile(file)
-      // Gutenberg books already have a cover image — skip the picker
+      const { bookId } = await ingestFile(file)
       if (coverUrl) {
         await db.books.update(bookId, { cover: coverUrl })
         navigate(`/book/${bookId}`)
