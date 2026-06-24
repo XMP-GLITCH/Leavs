@@ -5,36 +5,57 @@ import { db } from '../db/db'
 
 // ── Sources ─────────────────────────────────────────────────────────
 const SOURCES = [
-  { id: 'gutenberg', label: 'Gutenberg',       sub: '70k public domain books' },
-  { id: 'openlib',   label: 'Open Library',    sub: 'Internet Archive scans'  },
-  { id: 'standard',  label: 'Standard Ebooks', sub: '800 curated classics'    },
-  { id: 'oceanpdf',  label: 'OceanPDF',        sub: 'PDF book library'        },
+  { id: 'gutenberg', label: 'Gutenberg',       sub: '70k public domain books'    },
+  { id: 'openlib',   label: 'Open Library',    sub: 'Internet Archive scans'     },
+  { id: 'standard',  label: 'Standard Ebooks', sub: '800 curated classics'       },
+  { id: 'libgen',    label: 'Library Genesis', sub: 'Millions of books & papers' },
+  { id: 'anna',      label: "Anna's Archive",  sub: 'Largest shadow library'     },
+  { id: 'pdfdrive',  label: 'PDF Drive',       sub: '77M+ PDF documents'        },
+  { id: 'oceanpdf',  label: 'OceanPDF',        sub: 'PDF book library'           },
 ]
 
 const QUICK = {
   gutenberg: [
-    { label: 'Pride & Prejudice', q: 'pride prejudice' },
-    { label: 'Sherlock Holmes',   q: 'sherlock holmes' },
-    { label: 'Frankenstein',      q: 'frankenstein shelley' },
-    { label: 'Meditations',       q: 'marcus aurelius meditations' },
+    { label: 'Pride & Prejudice',  q: 'pride prejudice'           },
+    { label: 'Sherlock Holmes',    q: 'sherlock holmes'           },
+    { label: 'Frankenstein',       q: 'frankenstein shelley'      },
+    { label: 'Meditations',        q: 'marcus aurelius meditations' },
   ],
   openlib: [
-    { label: 'Mark Twain',   q: 'mark twain' },
-    { label: 'Dickens',      q: 'charles dickens' },
-    { label: 'Tolstoy',      q: 'leo tolstoy' },
-    { label: 'H.G. Wells',   q: 'h g wells' },
+    { label: 'Mark Twain',   q: 'mark twain'    },
+    { label: 'Dickens',      q: 'charles dickens'},
+    { label: 'Tolstoy',      q: 'leo tolstoy'   },
+    { label: 'H.G. Wells',   q: 'h g wells'     },
   ],
   standard: [
-    { label: 'Jane Austen',   q: 'jane austen' },
-    { label: 'Jules Verne',   q: 'jules verne' },
-    { label: 'Conan Doyle',   q: 'arthur conan doyle' },
-    { label: 'H.P. Lovecraft',q: 'lovecraft' },
+    { label: 'Jane Austen',    q: 'jane austen'         },
+    { label: 'Jules Verne',    q: 'jules verne'         },
+    { label: 'Conan Doyle',    q: 'arthur conan doyle'  },
+    { label: 'H.P. Lovecraft', q: 'lovecraft'           },
+  ],
+  libgen: [
+    { label: 'Dune',            q: 'dune frank herbert'         },
+    { label: '1984',            q: '1984 george orwell'         },
+    { label: 'Sapiens',         q: 'sapiens yuval harari'       },
+    { label: 'Thinking Fast',   q: 'thinking fast and slow'     },
+  ],
+  anna: [
+    { label: 'Atomic Habits',     q: 'atomic habits james clear'    },
+    { label: 'The Alchemist',     q: 'the alchemist paulo coelho'   },
+    { label: 'Educated',          q: 'educated tara westover'       },
+    { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad kiyosaki'   },
+  ],
+  pdfdrive: [
+    { label: 'The 48 Laws',       q: 'the 48 laws of power'         },
+    { label: 'Malcolm Gladwell',  q: 'malcolm gladwell'             },
+    { label: 'Jordan Peterson',   q: 'jordan peterson 12 rules'     },
+    { label: 'Elon Musk',         q: 'elon musk biography'          },
   ],
   oceanpdf: [
-    { label: 'Atomic Habits',   q: 'atomic habits' },
-    { label: 'Think & Grow Rich', q: 'think and grow rich' },
-    { label: 'The Alchemist',  q: 'the alchemist paulo coelho' },
-    { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad' },
+    { label: 'Atomic Habits',     q: 'atomic habits'                },
+    { label: 'Think & Grow Rich', q: 'think and grow rich'          },
+    { label: 'The Alchemist',     q: 'the alchemist paulo coelho'   },
+    { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad'            },
   ],
 }
 
@@ -52,13 +73,13 @@ async function searchGutenberg(query) {
   const data = await res.json()
   return (data.results || [])
     .map(b => ({
-      id:       `gut-${b.id}`,
-      title:    b.title,
-      author:   fmtAuthor(b.authors[0]?.name),
-      cover:    b.formats['image/jpeg'] || b.formats['image/png'] || null,
-      stat:     `${(b.download_count || 0).toLocaleString()} downloads`,
-      epubUrl:  b.formats['application/epub+zip'] || b.formats['application/epub+xml'] || null,
-      pdfUrl:   b.formats['application/pdf'] || null,
+      id:      `gut-${b.id}`,
+      title:   b.title,
+      author:  fmtAuthor(b.authors[0]?.name),
+      cover:   b.formats['image/jpeg'] || b.formats['image/png'] || null,
+      stat:    `${(b.download_count || 0).toLocaleString()} downloads`,
+      epubUrl: b.formats['application/epub+zip'] || b.formats['application/epub+xml'] || null,
+      pdfUrl:  b.formats['application/pdf'] || null,
     }))
     .filter(b => b.epubUrl || b.pdfUrl)
 }
@@ -79,9 +100,7 @@ async function searchOpenLibrary(query) {
         id:      `ol-${d.key}`,
         title:   d.title,
         author:  d.author_name?.[0] || 'Unknown',
-        cover:   d.cover_i
-          ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`
-          : null,
+        cover:   d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
         stat:    'Internet Archive',
         epubUrl: `https://archive.org/download/${ia}/${ia}.epub`,
         pdfUrl:  `https://archive.org/download/${ia}/${ia}.pdf`,
@@ -107,6 +126,36 @@ async function searchStandardEbooks(query) {
   }))
 }
 
+async function searchLibGen(query) {
+  const res = await fetch(`/api/libgen/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return (data.books || []).map(b => ({ ...b, source: 'libgen' }))
+}
+
+async function searchAnna(query) {
+  const res = await fetch(`/api/anna/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return (data.books || []).map(b => ({ ...b, source: 'anna' }))
+}
+
+async function searchPdfDrive(query) {
+  const res = await fetch(`/api/pdfdrive/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return (data.books || []).map(b => ({ ...b, source: 'pdfdrive' }))
+}
+
 async function searchOceanPdf(query) {
   const res = await fetch(`/api/ocean-pdf/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) {
@@ -114,18 +163,16 @@ async function searchOceanPdf(query) {
     throw new Error(err.error || `HTTP ${res.status}`)
   }
   const data = await res.json()
-  return (data.books || []).map(b => ({
-    ...b,
-    stat:    'OceanPDF',
-    epubUrl: null,
-    pdfUrl:  null,
-  }))
+  return (data.books || []).map(b => ({ ...b, source: 'oceanpdf', epubUrl: null, pdfUrl: null }))
 }
 
 async function runSearch(source, query) {
   if (source === 'gutenberg') return searchGutenberg(query)
   if (source === 'openlib')   return searchOpenLibrary(query)
   if (source === 'standard')  return searchStandardEbooks(query)
+  if (source === 'libgen')    return searchLibGen(query)
+  if (source === 'anna')      return searchAnna(query)
+  if (source === 'pdfdrive')  return searchPdfDrive(query)
   if (source === 'oceanpdf')  return searchOceanPdf(query)
   return []
 }
@@ -140,11 +187,15 @@ function SearchIcon() {
 }
 
 function BookRow({ book, adding, onAdd }) {
-  const hasDl = book.epubUrl || book.pdfUrl || book.pageUrl
-  const fmt = book.source === 'oceanpdf'    ? 'PDF'
-            : book.epubUrl && book.pdfUrl   ? 'EPUB · PDF'
-            : book.epubUrl                  ? 'EPUB'
-            : book.pdfUrl                   ? 'PDF'
+  const isMd5Source = book.source === 'libgen' || book.source === 'anna'
+  const hasDl = book.epubUrl || book.pdfUrl || book.pageUrl || isMd5Source
+
+  const fmt = isMd5Source                      ? (book.ext?.toUpperCase() || 'Book')
+            : book.source === 'oceanpdf'       ? 'PDF'
+            : book.source === 'pdfdrive'       ? 'PDF'
+            : book.epubUrl && book.pdfUrl      ? 'EPUB · PDF'
+            : book.epubUrl                     ? 'EPUB'
+            : book.pdfUrl                      ? 'PDF'
             : null
 
   return (
@@ -239,8 +290,25 @@ export default function DiscoverScreen() {
       let blob = null
       let fileType = null
 
-      if (book.source === 'oceanpdf') {
-        // OceanPDF: two-step — server fetches page, finds PDF link, streams it
+      if (book.source === 'libgen' || book.source === 'anna') {
+        // MD5-based: library.lol / libgen mirrors
+        const res = await fetch(`/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`)
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.error || 'Download failed')
+        }
+        blob = await res.blob()
+        const ct = res.headers.get('content-type') || ''
+        fileType = ct.includes('pdf') ? 'pdf' : 'epub'
+      } else if (book.source === 'pdfdrive') {
+        const res = await fetch(`/api/pdfdrive/fetch?url=${encodeURIComponent(book.pageUrl)}`)
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.error || 'Could not download PDF')
+        }
+        blob     = await res.blob()
+        fileType = 'pdf'
+      } else if (book.source === 'oceanpdf') {
         const res = await fetch(`/api/ocean-pdf/fetch?url=${encodeURIComponent(book.pageUrl)}`)
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
@@ -249,7 +317,7 @@ export default function DiscoverScreen() {
         blob     = await res.blob()
         fileType = 'pdf'
       } else {
-        // Other sources: try EPUB first, PDF as fallback
+        // Gutenberg, Open Library, Standard Ebooks — try EPUB then PDF
         const candidates = []
         if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })
         if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
@@ -282,6 +350,15 @@ export default function DiscoverScreen() {
   }
 
   const currentSource = SOURCES.find(s => s.id === source)
+
+  const sourceInfoChips = [currentSource?.sub].filter(Boolean)
+  if (source === 'openlib')   sourceInfoChips.push('EPUB + PDF available')
+  if (source === 'gutenberg') sourceInfoChips.push('EPUB + PDF where available')
+  if (source === 'standard')  sourceInfoChips.push('EPUB only · Premium formatting')
+  if (source === 'libgen')    sourceInfoChips.push('EPUB · PDF · DJVU · more')
+  if (source === 'anna')      sourceInfoChips.push('EPUB · PDF · multiple formats')
+  if (source === 'pdfdrive')  sourceInfoChips.push('PDF only')
+  if (source === 'oceanpdf')  sourceInfoChips.push('PDF only')
 
   return (
     <div className="screen">
@@ -343,13 +420,7 @@ export default function DiscoverScreen() {
             <h3>Source</h3>
           </div>
           <div className="discover-sources">
-            {[
-              currentSource?.sub,
-              source === 'openlib'   ? 'EPUB + PDF available'    : null,
-              source === 'gutenberg' ? 'EPUB + PDF where available' : null,
-              source === 'standard'  ? 'EPUB only · Premium formatting' : null,
-              'Public domain · Free to download',
-            ].filter(Boolean).map(txt => (
+            {sourceInfoChips.map(txt => (
               <div key={txt} className="source-chip">
                 <span className="source-chip__dot" />
                 <span>{txt}</span>
