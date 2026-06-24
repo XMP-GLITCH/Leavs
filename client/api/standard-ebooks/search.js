@@ -55,7 +55,8 @@ export default async function handler(req, res) {
       }
 
       if (!epubUrl) return null
-      return { title, author: author || 'Unknown', epubUrl, coverUrl }
+      const summary = tag(entry, 'summary') || tag(entry, 'content') || null
+      return { title, author: author || 'Unknown', epubUrl, coverUrl, description: summary }
     })
     .filter(b => {
       if (!b) return false

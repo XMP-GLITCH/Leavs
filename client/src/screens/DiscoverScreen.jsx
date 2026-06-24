@@ -3,15 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import { ingestFile } from '../lib/ingest'
 import { db } from '../db/db'
 
-// ── Sources ─────────────────────────────────────────────────────────
+// ── Sources (PDF Drive + OceanPDF removed — their downloads require
+//   JS rendering which can't run in a serverless function) ────────────
 const SOURCES = [
   { id: 'gutenberg', label: 'Gutenberg',       sub: '70k public domain books'    },
   { id: 'openlib',   label: 'Open Library',    sub: 'Internet Archive scans'     },
   { id: 'standard',  label: 'Standard Ebooks', sub: '800 curated classics'       },
   { id: 'libgen',    label: 'Library Genesis', sub: 'Millions of books & papers' },
   { id: 'anna',      label: "Anna's Archive",  sub: 'Largest shadow library'     },
-  { id: 'pdfdrive',  label: 'PDF Drive',       sub: '77M+ PDF documents'         },
-  { id: 'oceanpdf',  label: 'OceanPDF',        sub: 'PDF book library'           },
 ]
 
 const QUICK = {
@@ -22,10 +21,10 @@ const QUICK = {
     { label: 'Meditations',        q: 'marcus aurelius meditations' },
   ],
   openlib: [
-    { label: 'Mark Twain',  q: 'mark twain'     },
-    { label: 'Dickens',     q: 'charles dickens' },
-    { label: 'Tolstoy',     q: 'leo tolstoy'    },
-    { label: 'H.G. Wells',  q: 'h g wells'      },
+    { label: 'Atomic Habits',  q: 'atomic habits'    },
+    { label: '1984',           q: '1984 orwell'      },
+    { label: 'Sapiens',        q: 'sapiens harari'   },
+    { label: 'The Alchemist',  q: 'alchemist coelho' },
   ],
   standard: [
     { label: 'Jane Austen',    q: 'jane austen'        },
@@ -42,50 +41,12 @@ const QUICK = {
   anna: [
     { label: 'Atomic Habits',     q: 'atomic habits james clear'  },
     { label: 'The Alchemist',     q: 'the alchemist paulo coelho' },
-    { label: 'Educated',          q: 'educated tara westover'     },
     { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad kiyosaki' },
-  ],
-  pdfdrive: [
-    { label: 'The 48 Laws',      q: 'the 48 laws of power'    },
-    { label: 'Malcolm Gladwell', q: 'malcolm gladwell'        },
-    { label: 'Jordan Peterson',  q: 'jordan peterson 12 rules'},
-    { label: 'Elon Musk',        q: 'elon musk biography'     },
-  ],
-  oceanpdf: [
-    { label: 'Atomic Habits',     q: 'atomic habits'              },
-    { label: 'Think & Grow Rich', q: 'think and grow rich'        },
-    { label: 'The Alchemist',     q: 'the alchemist paulo coelho' },
-    { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad'          },
+    { label: 'Educated',          q: 'educated tara westover'     },
   ],
 }
 
-// ── Description fetcher (client-side for open APIs) ──────────────────
-async function fetchDescription(book) {
-  try {
-    if (book.id.startsWith('gut-')) {
-      const id = book.id.slice(4)
-      const r  = await fetch(`https://gutendex.com/books/${id}/`)
-      if (!r.ok) return null
-      const d  = await r.json()
-      const subjects = (d.subjects || []).slice(0, 6).join(' · ')
-      return subjects || null
-    }
-    if (book.id.startsWith('ol-')) {
-      // id = "ol-/works/OL1234W"
-      const workPath = book.id.slice(3)
-      const r = await fetch(`https://openlibrary.org${workPath}.json`)
-      if (!r.ok) return null
-      const d   = await r.json()
-      const raw = d.description
-      if (!raw) return null
-      const text = typeof raw === 'string' ? raw : (raw.value || '')
-      return text.slice(0, 800) || null
-    }
-  } catch { /* ignore */ }
-  return null
-}
-
-// ── Search adapters ──────────────────────────────────────────────────
+// ── Search adapters — include description where available ────────────
 function fmtAuthor(name) {
   if (!name) return 'Unknown'
   return name.includes(',') ? name.split(',').reverse().join(' ').trim() : name
@@ -97,21 +58,22 @@ async function searchGutenberg(query) {
   const data = await res.json()
   return (data.results || [])
     .map(b => ({
-      id:      `gut-${b.id}`,
-      title:   b.title,
-      author:  fmtAuthor(b.authors[0]?.name),
-      cover:   b.formats['image/jpeg'] || b.formats['image/png'] || null,
-      stat:    `${(b.download_count || 0).toLocaleString()} downloads`,
-      epubUrl: b.formats['application/epub+zip'] || b.formats['application/epub+xml'] || null,
-      pdfUrl:  b.formats['application/pdf'] || null,
+      id:          `gut-${b.id}`,
+      title:       b.title,
+      author:      fmtAuthor(b.authors[0]?.name),
+      cover:       b.formats['image/jpeg'] || b.formats['image/png'] || null,
+      stat:        `${(b.download_count || 0).toLocaleString()} downloads`,
+      description: b.subjects?.length ? b.subjects.slice(0, 6).join(' · ') : null,
+      epubUrl:     b.formats['application/epub+zip'] || b.formats['application/epub+xml'] || null,
+      pdfUrl:      b.formats['application/pdf'] || null,
     }))
     .filter(b => b.epubUrl || b.pdfUrl)
 }
 
 async function searchOpenLibrary(query) {
+  const fields = 'key,title,author_name,cover_i,ia,public_scan_b,first_sentence,subject'
   const res = await fetch(
-    `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&language=eng` +
-    `&fields=key,title,author_name,cover_i,ia,public_scan_b&limit=40`
+    `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&language=eng&fields=${fields}&limit=40`
   )
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
@@ -120,14 +82,20 @@ async function searchOpenLibrary(query) {
     .slice(0, 20)
     .map(d => {
       const ia = d.ia[0]
+      // first_sentence can be a string or {value: string}
+      const fs  = d.first_sentence
+      const desc = fs
+        ? (typeof fs === 'string' ? fs : fs.value || null)
+        : d.subject?.slice(0, 5).join(' · ') || null
       return {
-        id:      `ol-${d.key}`,
-        title:   d.title,
-        author:  d.author_name?.[0] || 'Unknown',
-        cover:   d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
-        stat:    'Internet Archive',
-        epubUrl: `https://archive.org/download/${ia}/${ia}.epub`,
-        pdfUrl:  `https://archive.org/download/${ia}/${ia}.pdf`,
+        id:          `ol-${d.key}`,
+        title:       d.title,
+        author:      d.author_name?.[0] || 'Unknown',
+        cover:       d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
+        stat:        'Internet Archive',
+        description: desc,
+        epubUrl:     `https://archive.org/download/${ia}/${ia}.epub`,
+        pdfUrl:      `https://archive.org/download/${ia}/${ia}.pdf`,
       }
     })
 }
@@ -137,9 +105,14 @@ async function searchStandardEbooks(query) {
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
   const data = await res.json()
   return (data.books || []).map((b, i) => ({
-    id: `se-${i}`, title: b.title, author: b.author,
-    cover: b.coverUrl || null, stat: 'Standard Ebooks',
-    epubUrl: b.epubUrl, pdfUrl: null,
+    id:          `se-${i}`,
+    title:       b.title,
+    author:      b.author,
+    cover:       b.coverUrl || null,
+    stat:        'Standard Ebooks',
+    description: b.description || null,
+    epubUrl:     b.epubUrl,
+    pdfUrl:      null,
   }))
 }
 
@@ -147,28 +120,14 @@ async function searchLibGen(query) {
   const res = await fetch(`/api/libgen/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
   const data = await res.json()
-  return (data.books || []).map(b => ({ ...b, source: 'libgen' }))
+  return (data.books || []).map(b => ({ ...b, source: 'libgen', description: null }))
 }
 
 async function searchAnna(query) {
   const res = await fetch(`/api/anna/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
   const data = await res.json()
-  return (data.books || []).map(b => ({ ...b, source: 'anna' }))
-}
-
-async function searchPdfDrive(query) {
-  const res = await fetch(`/api/pdfdrive/search?q=${encodeURIComponent(query)}`)
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
-  const data = await res.json()
-  return (data.books || []).map(b => ({ ...b, source: 'pdfdrive' }))
-}
-
-async function searchOceanPdf(query) {
-  const res = await fetch(`/api/ocean-pdf/search?q=${encodeURIComponent(query)}`)
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
-  const data = await res.json()
-  return (data.books || []).map(b => ({ ...b, source: 'oceanpdf', epubUrl: null, pdfUrl: null }))
+  return (data.books || []).map(b => ({ ...b, source: 'anna', description: null }))
 }
 
 async function runSearch(source, query) {
@@ -177,8 +136,6 @@ async function runSearch(source, query) {
   if (source === 'standard')  return searchStandardEbooks(query)
   if (source === 'libgen')    return searchLibGen(query)
   if (source === 'anna')      return searchAnna(query)
-  if (source === 'pdfdrive')  return searchPdfDrive(query)
-  if (source === 'oceanpdf')  return searchOceanPdf(query)
   return []
 }
 
@@ -195,10 +152,8 @@ async function fetchWithProgress(url, onProgress) {
 
   if (!total || !res.body) {
     onProgress(-1)
-    const blob = await res.blob()
-    return { blob, contentType }
+    return { blob: await res.blob(), contentType }
   }
-
   const reader = res.body.getReader()
   const chunks = []
   let received = 0
@@ -214,23 +169,21 @@ async function fetchWithProgress(url, onProgress) {
 
 // ── Shared format label ──────────────────────────────────────────────
 function fmtLabel(book) {
-  const isMd5 = book.source === 'libgen' || book.source === 'anna'
-  if (isMd5)                            return book.ext?.toUpperCase() || 'Book'
-  if (book.source === 'oceanpdf')       return 'PDF'
-  if (book.source === 'pdfdrive')       return 'PDF'
-  if (book.epubUrl && book.pdfUrl)      return 'EPUB · PDF'
-  if (book.epubUrl)                     return 'EPUB'
-  if (book.pdfUrl)                      return 'PDF'
+  // libgen/anna: stat already contains format (e.g. "2018 · EPUB · 1.2 MB")
+  if (book.source === 'libgen' || book.source === 'anna') return null
+  if (book.epubUrl && book.pdfUrl) return 'EPUB · PDF'
+  if (book.epubUrl)                return 'EPUB'
+  if (book.pdfUrl)                 return 'PDF'
   return null
 }
 
 // ── BookRow ──────────────────────────────────────────────────────────
 function BookRow({ book, progress, onAdd, onTap }) {
-  const isMd5  = book.source === 'libgen' || book.source === 'anna'
-  const hasDl  = book.epubUrl || book.pdfUrl || book.pageUrl || isMd5
+  const isMd5    = book.source === 'libgen' || book.source === 'anna'
+  const hasDl    = book.epubUrl || book.pdfUrl || isMd5
   const isAdding = progress != null
-  const fmt    = fmtLabel(book)
-  const pct    = (progress == null || progress === -1) ? null : Math.round(progress * 100)
+  const fmt      = fmtLabel(book)
+  const pct      = (progress == null || progress === -1) ? null : Math.round(progress * 100)
 
   return (
     <div
@@ -288,32 +241,43 @@ function BookRow({ book, progress, onAdd, onTap }) {
 
 // ── BookDetailSheet ──────────────────────────────────────────────────
 function BookDetailSheet({ book, onClose, onAdd, progress }) {
-  const [desc,    setDesc]    = useState(null)
-  const [descBusy, setDescBusy] = useState(false)
+  const [richDesc,     setRichDesc]     = useState(null)
+  const [descLoading,  setDescLoading]  = useState(false)
 
   useEffect(() => {
+    setRichDesc(null)
     if (!book) return
-    setDesc(null)
-    setDescBusy(true)
-    fetchDescription(book)
-      .then(d => setDesc(d))
-      .finally(() => setDescBusy(false))
+    // Only fetch extra detail for Open Library books that have no baked-in description
+    if (!book.id.startsWith('ol-') || book.description) return
+    const workPath = book.id.slice(3) // e.g. "/works/OL24456W"
+    setDescLoading(true)
+    fetch(`https://openlibrary.org${workPath}.json`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        const raw = d.description
+        if (!raw) return
+        const text = typeof raw === 'string' ? raw : (raw.value || '')
+        setRichDesc(text.slice(0, 800) || null)
+      })
+      .catch(() => {})
+      .finally(() => setDescLoading(false))
   }, [book?.id])
 
   if (!book) return null
 
   const isMd5    = book.source === 'libgen' || book.source === 'anna'
-  const hasDl    = book.epubUrl || book.pdfUrl || book.pageUrl || isMd5
+  const hasDl    = book.epubUrl || book.pdfUrl || isMd5
   const fmt      = fmtLabel(book)
   const isAdding = progress != null
   const pct      = (progress == null || progress === -1) ? null : Math.round(progress * 100)
+  const desc     = book.description || richDesc
 
   return (
     <div className="sheet-overlay" onClick={onClose}>
       <div className="sheet" onClick={e => e.stopPropagation()}>
         <div className="sheet-handle" />
 
-        {/* Cover */}
         <div className="sheet-cover-wrap">
           {book.cover
             ? <img src={book.cover} alt={book.title} className="sheet-cover-img" />
@@ -321,27 +285,19 @@ function BookDetailSheet({ book, onClose, onAdd, progress }) {
           }
         </div>
 
-        {/* Meta */}
         <h2 className="sheet-title">{book.title}</h2>
         <p className="sheet-author">{book.author}</p>
         {(book.stat || fmt) && (
           <p className="sheet-stat">{book.stat}{fmt ? ` · ${fmt}` : ''}</p>
         )}
 
-        {/* Description */}
-        {descBusy && (
-          <div className="sheet-desc-skeleton">
-            {[88, 72, 95, 55, 80].map(w => (
-              <div key={w} className="sheet-desc-bone" style={{ width: `${w}%` }} />
-            ))}
-          </div>
-        )}
-        {!descBusy && desc && <p className="sheet-desc">{desc}</p>}
-        {!descBusy && !desc && (
-          <p className="sheet-desc sheet-desc--empty">No description available</p>
-        )}
+        {desc
+          ? <p className="sheet-desc">{desc}</p>
+          : <p className="sheet-desc sheet-desc--empty">
+              {descLoading ? 'Loading description…' : 'No description available'}
+            </p>
+        }
 
-        {/* Download button */}
         {hasDl
           ? (
             <button
@@ -355,7 +311,7 @@ function BookDetailSheet({ book, onClose, onAdd, progress }) {
               }
             </button>
           )
-          : <p className="sheet-no-dl">No download available for this book</p>
+          : <p className="sheet-no-dl">No download available</p>
         }
       </div>
     </div>
@@ -373,7 +329,7 @@ export default function DiscoverScreen() {
   const [error,   setError]   = useState(null)
   const [adding,  setAdding]  = useState({})
   const [addMsg,  setAddMsg]  = useState(null)
-  const [sheet,   setSheet]   = useState(null)   // book shown in detail sheet
+  const [sheet,   setSheet]   = useState(null)
 
   const timerRef = useRef(null)
   const inputRef = useRef(null)
@@ -393,12 +349,11 @@ export default function DiscoverScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
 
-  // Close sheet on back gesture / escape
   useEffect(() => {
     if (!sheet) return
-    const onKey = e => { if (e.key === 'Escape') setSheet(null) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    const fn = e => { if (e.key === 'Escape') setSheet(null) }
+    window.addEventListener('keydown', fn)
+    return () => window.removeEventListener('keydown', fn)
   }, [sheet])
 
   async function doSearch(q) {
@@ -417,21 +372,19 @@ export default function DiscoverScreen() {
       let blob = null, fileType = null
 
       if (book.source === 'libgen' || book.source === 'anna') {
-        const { blob: b, contentType } = await fetchWithProgress(`/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`, onProgress)
+        const { blob: b, contentType } = await fetchWithProgress(
+          `/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`, onProgress
+        )
         blob = b; fileType = contentType.includes('pdf') ? 'pdf' : 'epub'
-      } else if (book.source === 'pdfdrive') {
-        const { blob: b } = await fetchWithProgress(`/api/pdfdrive/fetch?url=${encodeURIComponent(book.pageUrl)}`, onProgress)
-        blob = b; fileType = 'pdf'
-      } else if (book.source === 'oceanpdf') {
-        const { blob: b } = await fetchWithProgress(`/api/ocean-pdf/fetch?url=${encodeURIComponent(book.pageUrl)}`, onProgress)
-        blob = b; fileType = 'pdf'
       } else {
         const candidates = []
         if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })
         if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
         for (const { url, type } of candidates) {
           try {
-            const { blob: b } = await fetchWithProgress(`/api/gutenberg/proxy?url=${encodeURIComponent(url)}`, onProgress)
+            const { blob: b } = await fetchWithProgress(
+              `/api/gutenberg/proxy?url=${encodeURIComponent(url)}`, onProgress
+            )
             blob = b; fileType = type; break
           } catch { continue }
         }
@@ -441,11 +394,14 @@ export default function DiscoverScreen() {
 
       const ext  = fileType === 'pdf' ? '.pdf' : '.epub'
       const mime = fileType === 'pdf' ? 'application/pdf' : 'application/epub+zip'
-      const file = new File([blob], book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + ext, { type: mime })
-
+      const file = new File(
+        [blob],
+        book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + ext,
+        { type: mime }
+      )
       const result = await ingestFile(file)
       const bookId = typeof result === 'object' ? result.bookId : result
-      if (!bookId) throw new Error('Book was not saved correctly — please try again.')
+      if (!bookId) throw new Error('Book was not saved correctly')
 
       const updates = { mode: 'listen' }
       if (book.cover) updates.cover = book.cover
@@ -457,15 +413,13 @@ export default function DiscoverScreen() {
     }
   }
 
-  const currentSource  = SOURCES.find(s => s.id === source)
+  const currentSource   = SOURCES.find(s => s.id === source)
   const sourceInfoChips = [currentSource?.sub].filter(Boolean)
   if (source === 'openlib')   sourceInfoChips.push('EPUB + PDF available')
   if (source === 'gutenberg') sourceInfoChips.push('EPUB + PDF where available')
   if (source === 'standard')  sourceInfoChips.push('EPUB only · Premium formatting')
   if (source === 'libgen')    sourceInfoChips.push('EPUB · PDF · DJVU · more')
   if (source === 'anna')      sourceInfoChips.push('EPUB · PDF · multiple formats')
-  if (source === 'pdfdrive')  sourceInfoChips.push('PDF only')
-  if (source === 'oceanpdf')  sourceInfoChips.push('PDF only')
 
   return (
     <div className="screen">
@@ -559,7 +513,6 @@ export default function DiscoverScreen() {
           )
       )}
 
-      {/* Detail sheet */}
       <BookDetailSheet
         book={sheet}
         onClose={() => setSheet(null)}
