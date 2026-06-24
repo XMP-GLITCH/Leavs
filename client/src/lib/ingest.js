@@ -228,6 +228,8 @@ async function extractEpubCover(zip, opfDoc, opfDir) {
     const fullPath = (opfDir + coverHref).replace(/\/\//g, '/')
     const data = await zip.file(fullPath)?.async('uint8array')
     if (!data) return null
+    // Skip covers larger than 300 KB to keep IndexedDB lean
+    if (data.length > 300_000) return null
     const ext  = coverHref.split('.').pop().toLowerCase()
     const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }[ext] ?? 'image/jpeg'
     return await blobToDataUrl(new Blob([data], { type: mime }))

@@ -108,13 +108,13 @@ export default function DiscoverScreen() {
       const blob = await res.blob()
       const filename = book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + '.epub'
       const file = new File([blob], filename, { type: 'application/epub+zip' })
-      const { bookId } = await ingestFile(file)
+      const result = await ingestFile(file)
+      const bookId = typeof result === 'object' ? result.bookId : result
+      if (!bookId) throw new Error('Book was not saved correctly — please try again.')
       if (coverUrl) {
         await db.books.update(bookId, { cover: coverUrl })
-        navigate(`/book/${bookId}`)
-      } else {
-        navigate(`/book/${bookId}/cover`)
       }
+      navigate(`/book/${bookId}`)
     } catch (err) {
       setAddMsg(`Could not add: ${err.message}`)
       setAdding(a => ({ ...a, [book.id]: false }))
