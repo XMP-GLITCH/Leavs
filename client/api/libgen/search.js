@@ -1,4 +1,4 @@
-export const config = { maxDuration: 30 }
+export const config = { maxDuration: 45 }
 
 import { scrapeWithMirrors } from '../_lib/proxy.js'
 
