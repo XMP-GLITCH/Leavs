@@ -166,6 +166,36 @@ async function searchOceanPdf(query) {
   return (data.books || []).map(b => ({ ...b, source: 'oceanpdf', epubUrl: null, pdfUrl: null }))
 }
 
+// ── Download with progress tracking ─────────────────────────────────
+async function fetchWithProgress(url, onProgress) {
+  const res = await fetch(url)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const contentType   = res.headers.get('content-type') || ''
+  const contentLength = res.headers.get('content-length')
+  const total         = contentLength ? parseInt(contentLength, 10) : null
+
+  if (!total || !res.body) {
+    onProgress(-1)
+    const blob = await res.blob()
+    return { blob, contentType }
+  }
+
+  const reader = res.body.getReader()
+  const chunks = []
+  let received = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.length
+    onProgress(received / total)
+  }
+  return { blob: new Blob(chunks, { type: contentType }), contentType }
+}
+
 async function runSearch(source, query) {
   if (source === 'gutenberg') return searchGutenberg(query)
   if (source === 'openlib')   return searchOpenLibrary(query)
@@ -186,20 +216,23 @@ function SearchIcon() {
   )
 }
 
-function BookRow({ book, adding, onAdd }) {
+function BookRow({ book, progress, onAdd }) {
   const isMd5Source = book.source === 'libgen' || book.source === 'anna'
   const hasDl = book.epubUrl || book.pdfUrl || book.pageUrl || isMd5Source
+  const isAdding = progress != null
 
-  const fmt = isMd5Source                      ? (book.ext?.toUpperCase() || 'Book')
-            : book.source === 'oceanpdf'       ? 'PDF'
-            : book.source === 'pdfdrive'       ? 'PDF'
-            : book.epubUrl && book.pdfUrl      ? 'EPUB · PDF'
-            : book.epubUrl                     ? 'EPUB'
-            : book.pdfUrl                      ? 'PDF'
+  const fmt = isMd5Source                 ? (book.ext?.toUpperCase() || 'Book')
+            : book.source === 'oceanpdf'  ? 'PDF'
+            : book.source === 'pdfdrive'  ? 'PDF'
+            : book.epubUrl && book.pdfUrl ? 'EPUB · PDF'
+            : book.epubUrl               ? 'EPUB'
+            : book.pdfUrl                ? 'PDF'
             : null
 
+  const pct = (progress == null || progress === -1) ? null : Math.round(progress * 100)
+
   return (
-    <div className="disc-book">
+    <div className="disc-book" style={{ position: 'relative', overflow: 'hidden' }}>
       <div className="disc-cover">
         {book.cover
           ? <img src={book.cover} alt={book.title} loading="lazy" />
@@ -210,19 +243,26 @@ function BookRow({ book, adding, onAdd }) {
         <div className="disc-title">{book.title}</div>
         <div className="disc-author">{book.author}</div>
         <div className="disc-dl">
-          {book.stat}
-          {fmt && <span style={{ marginLeft: 6, opacity: 0.55 }}>{fmt}</span>}
+          {isAdding
+            ? <span style={{ color: 'var(--moss)', fontWeight: 500 }}>
+                {pct !== null ? `Downloading ${pct}%` : 'Downloading…'}
+              </span>
+            : <>
+                {book.stat}
+                {fmt && <span style={{ marginLeft: 6, opacity: 0.55 }}>{fmt}</span>}
+              </>
+          }
         </div>
       </div>
       {hasDl
         ? (
           <button
             className="disc-add"
-            onClick={() => onAdd(book)}
-            disabled={adding}
+            onClick={() => !isAdding && onAdd(book)}
+            disabled={isAdding}
             aria-label="Add to library"
           >
-            {adding
+            {isAdding
               ? <div className="disc-spin" />
               : <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -232,6 +272,16 @@ function BookRow({ book, adding, onAdd }) {
         )
         : <span className="disc-no-epub">No download</span>
       }
+
+      {/* Progress bar */}
+      {isAdding && (
+        <div className="disc-progress-track">
+          {pct !== null
+            ? <div className="disc-progress-fill" style={{ width: `${pct}%` }} />
+            : <div className="disc-progress-indeterminate" />
+          }
+        </div>
+      )}
     </div>
   )
 }
@@ -284,37 +334,31 @@ export default function DiscoverScreen() {
   }
 
   async function handleAdd(book) {
-    setAdding(a => ({ ...a, [book.id]: true }))
+    const bid = book.id
+    const onProgress = p => setAdding(a => ({ ...a, [bid]: p }))
+    setAdding(a => ({ ...a, [bid]: 0 }))
     setAddMsg(null)
     try {
       let blob = null
       let fileType = null
 
       if (book.source === 'libgen' || book.source === 'anna') {
-        // MD5-based: library.lol / libgen mirrors
-        const res = await fetch(`/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`)
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.error || 'Download failed')
-        }
-        blob = await res.blob()
-        const ct = res.headers.get('content-type') || ''
-        fileType = ct.includes('pdf') ? 'pdf' : 'epub'
+        const { blob: b, contentType } = await fetchWithProgress(
+          `/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`, onProgress
+        )
+        blob     = b
+        fileType = contentType.includes('pdf') ? 'pdf' : 'epub'
       } else if (book.source === 'pdfdrive') {
-        const res = await fetch(`/api/pdfdrive/fetch?url=${encodeURIComponent(book.pageUrl)}`)
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.error || 'Could not download PDF')
-        }
-        blob     = await res.blob()
+        const { blob: b } = await fetchWithProgress(
+          `/api/pdfdrive/fetch?url=${encodeURIComponent(book.pageUrl)}`, onProgress
+        )
+        blob     = b
         fileType = 'pdf'
       } else if (book.source === 'oceanpdf') {
-        const res = await fetch(`/api/ocean-pdf/fetch?url=${encodeURIComponent(book.pageUrl)}`)
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.error || 'Could not download PDF')
-        }
-        blob     = await res.blob()
+        const { blob: b } = await fetchWithProgress(
+          `/api/ocean-pdf/fetch?url=${encodeURIComponent(book.pageUrl)}`, onProgress
+        )
+        blob     = b
         fileType = 'pdf'
       } else {
         // Gutenberg, Open Library, Standard Ebooks — try EPUB then PDF
@@ -323,8 +367,14 @@ export default function DiscoverScreen() {
         if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
 
         for (const { url, type } of candidates) {
-          const res = await fetch(`/api/gutenberg/proxy?url=${encodeURIComponent(url)}`)
-          if (res.ok) { blob = await res.blob(); fileType = type; break }
+          try {
+            const { blob: b } = await fetchWithProgress(
+              `/api/gutenberg/proxy?url=${encodeURIComponent(url)}`, onProgress
+            )
+            blob     = b
+            fileType = type
+            break
+          } catch { continue }
         }
       }
 
@@ -345,7 +395,7 @@ export default function DiscoverScreen() {
       navigate(`/book/${bookId}`)
     } catch (err) {
       setAddMsg(`Could not add: ${err.message}`)
-      setAdding(a => ({ ...a, [book.id]: false }))
+      setAdding(a => { const n = { ...a }; delete n[bid]; return n })
     }
   }
 
@@ -461,7 +511,7 @@ export default function DiscoverScreen() {
                 <BookRow
                   key={book.id}
                   book={book}
-                  adding={!!adding[book.id]}
+                  progress={adding[book.id] ?? null}
                   onAdd={handleAdd}
                 />
               ))}

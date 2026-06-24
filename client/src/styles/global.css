@@ -1626,6 +1626,30 @@ img { display: block; max-width: 100%; height: auto; }
 
 .disc-no-epub { font-size: 10px; color: var(--text-secondary); opacity: 0.5; white-space: nowrap; }
 
+.disc-progress-track {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 3px;
+  background: rgba(45,74,45,0.12);
+  overflow: hidden;
+}
+.disc-progress-fill {
+  height: 100%;
+  background: var(--moss);
+  transition: width 0.15s ease;
+}
+.disc-progress-indeterminate {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 40%;
+  background: var(--moss);
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0%   { left: -40%; }
+  100% { left: 140%; }
+}
+
 /* ─── Stats Header ──────────────────────────────────────────────── */
 .stats-hdr {
   padding: 54px 22px 20px;
