@@ -1626,6 +1626,92 @@ img { display: block; max-width: 100%; height: auto; }
 
 .disc-no-epub { font-size: 10px; color: var(--text-secondary); opacity: 0.5; white-space: nowrap; }
 
+/* ─── Book detail bottom sheet ──────────────────────────────────── */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sheet {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg);
+  border-radius: 22px 22px 0 0;
+  padding: 10px 22px 44px;
+  max-height: 88dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: sheet-up 0.28s cubic-bezier(0.32,0.72,0,1);
+}
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0);    }
+}
+.sheet-handle {
+  width: 36px; height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  margin: 0 auto 20px;
+}
+.sheet-cover-wrap {
+  width: 110px; height: 154px;
+  margin: 0 auto 18px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+}
+.sheet-cover-img { width: 100%; height: 100%; object-fit: cover; }
+.sheet-cover-ph-lg {
+  width: 100%; height: 100%;
+  background: var(--moss);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 40px; font-weight: 700;
+}
+.sheet-title {
+  font-size: 17px; font-weight: 700;
+  color: var(--ink); line-height: 1.3;
+  text-align: center; margin: 0 0 6px;
+}
+.sheet-author {
+  font-size: 13px; color: var(--text-secondary);
+  text-align: center; margin: 0 0 4px;
+}
+.sheet-stat {
+  font-size: 11px; color: var(--text-secondary);
+  opacity: 0.55; text-align: center; margin: 0 0 18px;
+}
+.sheet-desc {
+  font-size: 13px; line-height: 1.65;
+  color: var(--text-secondary); margin: 0 0 24px;
+}
+.sheet-desc--empty { opacity: 0.4; font-style: italic; }
+.sheet-desc-skeleton {
+  display: flex; flex-direction: column; gap: 8px; margin: 0 0 24px;
+}
+.sheet-desc-bone {
+  height: 11px; border-radius: 6px;
+  background: var(--vein); opacity: 0.25;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:.25} 50%{opacity:.45} }
+.sheet-dl-btn {
+  display: block; width: 100%;
+  padding: 15px; margin-top: 4px;
+  background: var(--moss); color: #fff;
+  border: none; border-radius: var(--radius-lg);
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  letter-spacing: 0.01em;
+}
+.sheet-dl-btn:disabled { opacity: 0.6; cursor: default; }
+.sheet-no-dl {
+  font-size: 13px; color: var(--text-secondary);
+  opacity: 0.5; text-align: center; margin: 8px 0;
+}
+
 .disc-progress-track {
   position: absolute;
   bottom: 0; left: 0; right: 0;
