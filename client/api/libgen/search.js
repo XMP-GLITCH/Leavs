@@ -2,12 +2,13 @@ export const config = { maxDuration: 30 }
 
 import { scrapeWithMirrors } from '../_lib/proxy.js'
 
+// Ordered lightest → heaviest Cloudflare protection
 const MIRRORS = [
-  'https://libgen.is',
-  'https://libgen.st',
   'https://libgen.rs',
   'https://libgen.li',
+  'https://libgen.st',
   'https://libgen.lc',
+  'https://libgen.is',
 ]
 
 function stripTags(s) {

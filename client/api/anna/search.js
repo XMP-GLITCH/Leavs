@@ -2,11 +2,12 @@ export const config = { maxDuration: 30 }
 
 import { scrapeWithMirrors } from '../_lib/proxy.js'
 
+// Ordered lightest → heaviest Cloudflare protection
 const MIRRORS = [
-  'https://annas-archive.org',
   'https://annas-archive.se',
   'https://annas-archive.gs',
   'https://annas-archive.li',
+  'https://annas-archive.org',
 ]
 
 function stripTags(s) {

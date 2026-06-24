@@ -5,8 +5,9 @@
  * scraping through ScraperAPI's residential IPs, bypassing Cloudflare.
  * Free plan at scraperapi.com — 1000 req/month, no credit card required.
  *
- * Without the key the functions fall back to direct fetch + browser headers
- * (works for LibGen; may still be blocked on Anna's/PDFDrive/OceanPDF).
+ * Without the key we fall back to:
+ *   1. Direct fetch with full browser headers + cookie prefetch
+ *   2. allorigins.win free CORS proxy (helps with basic blocks, not CF JS challenges)
  */
 
 const KEY = process.env.SCRAPER_API_KEY
@@ -37,59 +38,75 @@ export function isBlocked(status, html) {
     || html.includes('Just a moment')
     || html.includes('cf-challenge')
     || html.includes('_cf_chl_')
+    || html.includes('Attention Required!')
+    || html.includes('Access denied')
 }
 
 /**
  * Fetch a URL's HTML, going through ScraperAPI when the key is present.
- * @param {string}   url
- * @param {object}   [extraHeaders]  — ignored when using ScraperAPI
- * @param {string}   [referer]       — used for cookie-prefetch when no key
+ * Falls back to direct fetch + allorigins.win proxy when no key.
  */
 export async function scrape(url, { extraHeaders = {}, referer = null } = {}) {
   if (KEY) {
     const r = await fetch(scraperUrl(url))
     if (!r.ok) throw new Error(`ScraperAPI HTTP ${r.status}`)
-    return r.text()
+    const html = await r.text()
+    if (isBlocked(200, html)) throw new Error('ScraperAPI: still blocked after proxy')
+    return html
   }
 
-  // ── No API key: direct fetch with browser headers ────────────────
-  let cookies = ''
-  if (referer) {
-    try {
-      const home = await fetch(referer, { headers: BROWSER })
-      const sc   = home.headers.get('set-cookie')
-      if (sc) cookies = sc.split(',').map(c => c.split(';')[0].trim()).filter(Boolean).join('; ')
-    } catch { /* ignore */ }
-  }
+  // ── Tier 1: direct fetch with browser headers + cookie prefetch ──────
+  try {
+    let cookies = ''
+    if (referer) {
+      try {
+        const home = await fetch(referer, { headers: BROWSER })
+        const sc   = home.headers.get('set-cookie')
+        if (sc) cookies = sc.split(',').map(c => c.split(';')[0].trim()).filter(Boolean).join('; ')
+      } catch { /* ignore */ }
+    }
+    const headers = {
+      ...BROWSER,
+      ...(referer  ? { Referer: referer, 'Sec-Fetch-Site': 'same-origin' } : {}),
+      ...(cookies  ? { Cookie: cookies  } : {}),
+      ...extraHeaders,
+    }
+    const r    = await fetch(url, { headers })
+    const html = await r.text()
+    if (!isBlocked(r.status, html)) return html
+    // blocked — fall through to free proxy
+  } catch { /* network error — fall through */ }
 
-  const headers = {
-    ...BROWSER,
-    ...(referer  ? { Referer: referer, 'Sec-Fetch-Site': 'same-origin' } : {}),
-    ...(cookies  ? { Cookie: cookies  } : {}),
-    ...extraHeaders,
-  }
+  // ── Tier 2: free CORS proxy (bypasses basic IP/geo blocks, not CF JS) ──
+  try {
+    const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, {
+      headers: { 'User-Agent': BROWSER['User-Agent'] },
+    })
+    if (r.ok) {
+      const html = await r.text()
+      if (!isBlocked(200, html) && html.length > 200) return html
+    }
+  } catch { /* ignore */ }
 
-  const r    = await fetch(url, { headers })
-  const html = await r.text()
-  if (isBlocked(r.status, html)) throw new Error(`Blocked (${r.status}) — add SCRAPER_API_KEY env var to fix`)
-  return html
+  throw new Error(
+    'Blocked by Cloudflare. Add SCRAPER_API_KEY in Vercel → Settings → Environment Variables (free at scraperapi.com).'
+  )
 }
 
 /**
- * Like scrape() but tries an ordered list of mirror URLs, returning the
- * first that succeeds. When ScraperAPI is enabled only the first URL is used.
+ * Try an ordered list of mirror URLs, returning the first that succeeds.
+ * Always tries every mirror (with ScraperAPI or without) before giving up.
  */
 export async function scrapeWithMirrors(mirrors, queryPath, { referer } = {}) {
-  if (KEY) {
-    // ScraperAPI retries internally; one call is enough
-    return scrape(mirrors[0] + queryPath, { referer })
-  }
-
   const errors = []
   for (const mirror of mirrors) {
     try {
-      return await scrape(mirror + queryPath, { referer: mirror + '/' })
-    } catch (e) { errors.push(`${mirror}: ${e.message}`) }
+      // scrape() routes through ScraperAPI when KEY is set, direct otherwise
+      const html = await scrape(mirror + queryPath, { referer: referer ?? (mirror + '/') })
+      return html
+    } catch (e) {
+      errors.push(`${mirror.replace('https://', '')}: ${e.message}`)
+    }
   }
   throw new Error(errors.join(' | '))
 }
