@@ -111,9 +111,9 @@ export default function DiscoverScreen() {
       const result = await ingestFile(file)
       const bookId = typeof result === 'object' ? result.bookId : result
       if (!bookId) throw new Error('Book was not saved correctly — please try again.')
-      if (coverUrl) {
-        await db.books.update(bookId, { cover: coverUrl })
-      }
+      const updates = { mode: 'listen' }
+      if (coverUrl) updates.cover = coverUrl
+      await db.books.update(bookId, updates)
       navigate(`/book/${bookId}`)
     } catch (err) {
       setAddMsg(`Could not add: ${err.message}`)
