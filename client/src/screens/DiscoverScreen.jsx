@@ -325,8 +325,8 @@ export default function DiscoverScreen() {
     try {
       const books = await runSearch(source, q)
       setResults(books)
-    } catch {
-      setError('Search failed — check your connection.')
+    } catch (err) {
+      setError(err.message || 'Search failed — try another source.')
       setResults(null)
     } finally {
       setLoading(false)

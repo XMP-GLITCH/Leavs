@@ -1,25 +1,45 @@
-export const config = { maxDuration: 20 }
+export const config = { maxDuration: 25 }
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-const MIRRORS = ['https://libgen.is', 'https://libgen.st', 'https://libgen.rs']
 
-function stripTags(s) { return s.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#\d+;/g,'').trim() }
+const MIRRORS = [
+  'https://libgen.is',
+  'https://libgen.st',
+  'https://libgen.rs',
+  'https://libgen.li',
+  'https://libgen.lc',
+]
+
+function isCloudflareChallenge(html) {
+  return html.includes('Just a moment') || html.includes('cf-challenge') || html.includes('_cf_chl_')
+}
+
+function stripTags(s) { return (s||'').replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#\d+;/g,'').trim() }
 
 export default async function handler(req, res) {
   const q = (req.query.q || '').trim()
   if (!q) return res.status(400).json({ error: 'query required' })
 
   let html = null
+  let lastError = 'All mirrors failed'
+
   for (const mirror of MIRRORS) {
     try {
       const r = await fetch(
         `${mirror}/search.php?req=${encodeURIComponent(q)}&res=25&view=simple&phrase=1&column=def`,
         { headers: { 'User-Agent': UA, 'Accept': 'text/html' } }
       )
-      if (r.ok) { html = await r.text(); break }
-    } catch { continue }
+      if (!r.ok) { lastError = `HTTP ${r.status} from ${mirror}`; continue }
+      const text = await r.text()
+      if (isCloudflareChallenge(text)) { lastError = `${mirror} is Cloudflare-blocked`; continue }
+      html = text
+      break
+    } catch (e) { lastError = e.message; continue }
   }
-  if (!html) return res.status(502).json({ error: 'All LibGen mirrors failed' })
+
+  if (!html) {
+    return res.status(502).json({ error: `Library Genesis: ${lastError}` })
+  }
 
   const books = []
   for (const [, row] of html.matchAll(/<tr[^>]*valign="top"[^>]*>([\s\S]*?)<\/tr>/gi)) {

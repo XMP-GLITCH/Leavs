@@ -18,8 +18,11 @@ export default async function handler(req, res) {
     })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     html = await r.text()
+    if (html.includes('Just a moment') || html.includes('cf-challenge')) {
+      throw new Error('OceanPDF is Cloudflare-blocked — try another source')
+    }
   } catch (err) {
-    return res.status(502).json({ error: `Search failed: ${err.message}` })
+    return res.status(502).json({ error: err.message })
   }
 
   const books = []
