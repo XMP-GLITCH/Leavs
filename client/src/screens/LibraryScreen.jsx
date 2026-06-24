@@ -139,7 +139,7 @@ export default function LibraryScreen() {
   )
 
   const continueBook = books?.[0] ?? null
-  const recentBooks  = books?.slice(1, 7) ?? []
+  const recentBooks  = books?.slice(0, 7) ?? []
   const gridBooks    = books ?? []
 
   async function handleFabAction(action) {

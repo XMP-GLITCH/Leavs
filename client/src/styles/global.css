@@ -538,13 +538,13 @@ img { display: block; max-width: 100%; height: auto; }
 
 .bcard {
   flex-shrink: 0;
-  width: 86px;
+  width: 68px;
   cursor: pointer;
 }
 
 .bcover {
-  width: 86px;
-  height: 118px;
+  width: 68px;
+  height: 94px;
   border-radius: 6px;
   margin-bottom: 5px;
   position: relative;
