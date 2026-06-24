@@ -6,28 +6,28 @@ const BASE = 'https://www.pdfdrive.com'
 const ALLOWED = new Set(['www.pdfdrive.com', 'pdfdrive.com'])
 
 function findPdfUrl(html, pageUrl) {
-  // 1. Direct /download.pdf?id= href already in page
+  // 1. onclick="dl('ID','HASH')" — hash is in the static HTML
+  const onclick = html.match(/dl\s*\(\s*['"](\d+)['"]\s*,\s*['"]([^'"]{4,})['"]\s*\)/i)
+  if (onclick) return `${BASE}/download.pdf?id=${onclick[1]}&h=${onclick[2]}&u=cache&ext=pdf`
+
+  // 2. Direct /download.pdf?id= href
   const direct = html.match(/href="(\/download(?:\.pdf)?\?[^"]+)"/)
   if (direct) return BASE + direct[1]
 
-  // 2. data-id attribute (various element types)
+  // 3. data-id + optional hash attributes
   const idM   = html.match(/data-id="(\d{4,})"/)
   const hashM = html.match(/data-(?:preview|session|hash|key)="([a-zA-Z0-9_-]{4,})"/)
-  if (idM) {
-    return `${BASE}/download.pdf?id=${idM[1]}&h=${hashM?.[1] ?? ''}&u=cache&ext=pdf`
-  }
+  if (idM) return `${BASE}/download.pdf?id=${idM[1]}&h=${hashM?.[1] ?? ''}&u=cache&ext=pdf`
 
-  // 3. Book ID encoded in the URL slug: /title-dNNNNNNN.html
-  const slugId = pageUrl.match(/[- ]d(\d{5,})\.html$/i)
-  if (slugId) {
-    return `${BASE}/download.pdf?id=${slugId[1]}&h=&u=cache&ext=pdf`
-  }
+  // 4. Book ID from URL slug: PDF Drive uses /title-e12345678.html (letter + digits)
+  const slugId = pageUrl.match(/[- ][a-z](\d{5,})\.html$/i)
+  if (slugId) return `${BASE}/download.pdf?id=${slugId[1]}&h=&u=cache&ext=pdf`
 
-  // 4. Any .pdf link on the page
+  // 5. Any .pdf href on the page
   const pdfHref = html.match(/href="(https?:\/\/[^"]+\.pdf(?:[?#][^"]*)?)"/i)
   if (pdfHref) return pdfHref[1]
 
-  // 5. /drive/?id= pattern
+  // 6. /drive/?id= pattern
   const driveHref = html.match(/href="(\/drive\/\?[^"]+)"/)
   if (driveHref) return BASE + driveHref[1]
 

@@ -5,30 +5,37 @@ import { scrape, BROWSER } from '../_lib/proxy.js'
 const ALLOWED = new Set(['oceanofpdf.com', 'www.oceanofpdf.com', 'oceanpdf.com', 'www.oceanpdf.com'])
 
 function findDownloadUrl(html, pageUrl) {
-  // 1. Direct .pdf href
+  // 1. onclick or data attribute containing a URL
+  const dataUrl = html.match(/data-(?:url|href|link|src)="(https?:\/\/[^"]+\.pdf[^"]*)"/i)
+  if (dataUrl) return dataUrl[1]
+
+  // 2. Direct .pdf href
   const pdf = html.match(/href="(https?:\/\/[^"]+\.pdf(?:[?#][^"]*)?)"/i)
   if (pdf) return pdf[1]
 
-  // 2. Download / Get PDF button href
-  const btn = html.match(/href="([^"]+)"[^>]*>(?:<[^>]+>)*\s*(?:Download|Get PDF|PDF Download|Download PDF|Download Book)\s*/i)
-           || html.match(/class="[^"]*(?:download|dl-btn|pdf-btn)[^"]*"[^>]*href="([^"]+)"/i)
+  // 3. Download / Get PDF button href (various text labels)
+  const btn = html.match(/href="([^"#][^"]*)"[^>]*>(?:<[^>]+>)*\s*(?:Download|Get PDF|PDF Download|Download PDF|Download Book|Free Download)\s*/i)
+           || html.match(/class="[^"]*(?:download|dl-btn|pdf-btn|btn-dl)[^"]*"[^>]*href="([^"]+)"/i)
+           || html.match(/href="([^"]+)"[^>]*class="[^"]*(?:download|dl-btn|pdf-btn|btn-dl)[^"]*"/i)
   if (btn) {
     const h = btn[1]
-    try { return new URL(h, pageUrl).href } catch { return null }
+    if (h && !h.startsWith('#')) try { return new URL(h, pageUrl).href } catch { /* skip */ }
   }
 
-  // 3. <a download> attribute
-  const dlAttr = html.match(/<a[^>]+\bdownload\b[^>]*href="([^"]+)"/i)
-              || html.match(/<a[^>]+href="([^"]+)"[^>]+\bdownload\b/i)
-  if (dlAttr) {
-    try { return new URL(dlAttr[1], pageUrl).href } catch { return null }
-  }
+  // 4. <a download> attribute
+  const dlAttr = html.match(/<a[^>]+\bdownload\b[^>]*href="([^"#][^"]*)"/i)
+              || html.match(/<a[^>]+href="([^"#][^"]*)"[^>]+\bdownload\b/i)
+  if (dlAttr) try { return new URL(dlAttr[1], pageUrl).href } catch { /* skip */ }
 
-  // 4. Google Drive, Dropbox, MediaFire, archive.org links
-  const external = html.match(/href="(https?:\/\/(?:drive\.google\.com|www\.dropbox\.com|www\.mediafire\.com|archive\.org\/download)[^"]+)"/i)
+  // 5. Google Drive, Dropbox, MediaFire, archive.org, 4shared
+  const external = html.match(/href="(https?:\/\/(?:drive\.google\.com|docs\.google\.com|www\.dropbox\.com|www\.mediafire\.com|archive\.org\/download|www\.4shared\.com)[^"]+)"/i)
   if (external) return external[1]
 
-  // 5. Any link with "download" in the path
+  // 6. JavaScript window.location or location.href redirect
+  const jsRedir = html.match(/(?:window\.location|location\.href)\s*=\s*['"]([^'"]+\.pdf[^'"]*)['"]/)
+  if (jsRedir) return jsRedir[1]
+
+  // 7. Any link with /download in path
   const dlPath = html.match(/href="(https?:\/\/[^"]*\/download[^"]*)"/)
   if (dlPath) return dlPath[1]
 
