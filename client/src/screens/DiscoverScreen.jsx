@@ -8,6 +8,7 @@ const SOURCES = [
   { id: 'gutenberg', label: 'Gutenberg',       sub: '70k public domain books' },
   { id: 'openlib',   label: 'Open Library',    sub: 'Internet Archive scans'  },
   { id: 'standard',  label: 'Standard Ebooks', sub: '800 curated classics'    },
+  { id: 'oceanpdf',  label: 'OceanPDF',        sub: 'PDF book library'        },
 ]
 
 const QUICK = {
@@ -28,6 +29,12 @@ const QUICK = {
     { label: 'Jules Verne',   q: 'jules verne' },
     { label: 'Conan Doyle',   q: 'arthur conan doyle' },
     { label: 'H.P. Lovecraft',q: 'lovecraft' },
+  ],
+  oceanpdf: [
+    { label: 'Atomic Habits',   q: 'atomic habits' },
+    { label: 'Think & Grow Rich', q: 'think and grow rich' },
+    { label: 'The Alchemist',  q: 'the alchemist paulo coelho' },
+    { label: 'Rich Dad Poor Dad', q: 'rich dad poor dad' },
   ],
 }
 
@@ -100,10 +107,26 @@ async function searchStandardEbooks(query) {
   }))
 }
 
+async function searchOceanPdf(query) {
+  const res = await fetch(`/api/ocean-pdf/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return (data.books || []).map(b => ({
+    ...b,
+    stat:    'OceanPDF',
+    epubUrl: null,
+    pdfUrl:  null,
+  }))
+}
+
 async function runSearch(source, query) {
   if (source === 'gutenberg') return searchGutenberg(query)
   if (source === 'openlib')   return searchOpenLibrary(query)
   if (source === 'standard')  return searchStandardEbooks(query)
+  if (source === 'oceanpdf')  return searchOceanPdf(query)
   return []
 }
 
@@ -117,10 +140,11 @@ function SearchIcon() {
 }
 
 function BookRow({ book, adding, onAdd }) {
-  const hasDl = book.epubUrl || book.pdfUrl
-  const fmt = book.epubUrl && book.pdfUrl ? 'EPUB · PDF'
-            : book.epubUrl                ? 'EPUB'
-            : book.pdfUrl                 ? 'PDF'
+  const hasDl = book.epubUrl || book.pdfUrl || book.pageUrl
+  const fmt = book.source === 'oceanpdf'    ? 'PDF'
+            : book.epubUrl && book.pdfUrl   ? 'EPUB · PDF'
+            : book.epubUrl                  ? 'EPUB'
+            : book.pdfUrl                   ? 'PDF'
             : null
 
   return (
@@ -212,21 +236,27 @@ export default function DiscoverScreen() {
     setAdding(a => ({ ...a, [book.id]: true }))
     setAddMsg(null)
     try {
-      // Try EPUB first, PDF as fallback
-      const candidates = []
-      if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })
-      if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
-
       let blob = null
       let fileType = null
 
-      for (const { url, type } of candidates) {
-        const proxyUrl = `/api/gutenberg/proxy?url=${encodeURIComponent(url)}`
-        const res = await fetch(proxyUrl)
-        if (res.ok) {
-          blob     = await res.blob()
-          fileType = type
-          break
+      if (book.source === 'oceanpdf') {
+        // OceanPDF: two-step — server fetches page, finds PDF link, streams it
+        const res = await fetch(`/api/ocean-pdf/fetch?url=${encodeURIComponent(book.pageUrl)}`)
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.error || 'Could not download PDF')
+        }
+        blob     = await res.blob()
+        fileType = 'pdf'
+      } else {
+        // Other sources: try EPUB first, PDF as fallback
+        const candidates = []
+        if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })
+        if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
+
+        for (const { url, type } of candidates) {
+          const res = await fetch(`/api/gutenberg/proxy?url=${encodeURIComponent(url)}`)
+          if (res.ok) { blob = await res.blob(); fileType = type; break }
         }
       }
 
