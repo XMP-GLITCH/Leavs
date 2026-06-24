@@ -1498,6 +1498,35 @@ img { display: block; max-width: 100%; height: auto; }
 
 .search-input::placeholder { color: var(--text-placeholder); }
 
+/* ─── Discover source tabs ──────────────────────────────────────── */
+.src-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.src-tabs::-webkit-scrollbar { display: none; }
+
+.src-tab {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'DM Sans', sans-serif;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.src-tab--active {
+  background: var(--moss);
+  color: #fff;
+  border-color: var(--moss);
+}
+
 .discover-sources { padding: var(--space-2) 0; }
 
 .source-chip {

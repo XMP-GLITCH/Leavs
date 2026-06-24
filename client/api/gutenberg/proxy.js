@@ -1,11 +1,23 @@
 export const config = { maxDuration: 30 }
 
-const ALLOWED_HOSTS = [
+// Exact hostname allowlist
+const ALLOWED_HOSTS = new Set([
   'www.gutenberg.org',
   'gutenberg.org',
   'gutenberg.pglaf.org',
   'aleph.gutenberg.org',
-]
+  // Open Library / Internet Archive
+  'archive.org',
+  'www.archive.org',
+  // Standard Ebooks
+  'standardebooks.org',
+  'www.standardebooks.org',
+])
+
+// Also allow any *.archive.org subdomain (IA storage mirrors like ia800.us.archive.org)
+function isAllowed(hostname) {
+  return ALLOWED_HOSTS.has(hostname) || hostname.endsWith('.archive.org')
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
@@ -20,7 +32,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'invalid url' })
   }
 
-  if (!ALLOWED_HOSTS.includes(parsed.hostname)) {
+  if (!isAllowed(parsed.hostname)) {
     return res.status(403).json({ error: 'host not allowed' })
   }
 

@@ -3,15 +3,111 @@ import { useNavigate } from 'react-router-dom'
 import { ingestFile } from '../lib/ingest'
 import { db } from '../db/db'
 
-const GUTENDEX = 'https://gutendex.com/books'
-
-const QUICK_SEARCHES = [
-  { label: 'Pride & Prejudice', q: 'pride prejudice austen' },
-  { label: 'Sherlock Holmes',   q: 'sherlock holmes doyle' },
-  { label: 'Frankenstein',      q: 'frankenstein shelley'  },
-  { label: 'Stoicism',          q: 'marcus aurelius stoic' },
+// ── Sources ─────────────────────────────────────────────────────────
+const SOURCES = [
+  { id: 'gutenberg', label: 'Gutenberg',       sub: '70k public domain books' },
+  { id: 'openlib',   label: 'Open Library',    sub: 'Internet Archive scans'  },
+  { id: 'standard',  label: 'Standard Ebooks', sub: '800 curated classics'    },
 ]
 
+const QUICK = {
+  gutenberg: [
+    { label: 'Pride & Prejudice', q: 'pride prejudice' },
+    { label: 'Sherlock Holmes',   q: 'sherlock holmes' },
+    { label: 'Frankenstein',      q: 'frankenstein shelley' },
+    { label: 'Meditations',       q: 'marcus aurelius meditations' },
+  ],
+  openlib: [
+    { label: 'Mark Twain',   q: 'mark twain' },
+    { label: 'Dickens',      q: 'charles dickens' },
+    { label: 'Tolstoy',      q: 'leo tolstoy' },
+    { label: 'H.G. Wells',   q: 'h g wells' },
+  ],
+  standard: [
+    { label: 'Jane Austen',   q: 'jane austen' },
+    { label: 'Jules Verne',   q: 'jules verne' },
+    { label: 'Conan Doyle',   q: 'arthur conan doyle' },
+    { label: 'H.P. Lovecraft',q: 'lovecraft' },
+  ],
+}
+
+// ── Search adapters ──────────────────────────────────────────────────
+function fmtAuthor(name) {
+  if (!name) return 'Unknown'
+  return name.includes(',') ? name.split(',').reverse().join(' ').trim() : name
+}
+
+async function searchGutenberg(query) {
+  const res = await fetch(
+    `https://gutendex.com/books/?search=${encodeURIComponent(query)}&languages=en`
+  )
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return (data.results || [])
+    .map(b => ({
+      id:       `gut-${b.id}`,
+      title:    b.title,
+      author:   fmtAuthor(b.authors[0]?.name),
+      cover:    b.formats['image/jpeg'] || b.formats['image/png'] || null,
+      stat:     `${(b.download_count || 0).toLocaleString()} downloads`,
+      epubUrl:  b.formats['application/epub+zip'] || b.formats['application/epub+xml'] || null,
+      pdfUrl:   b.formats['application/pdf'] || null,
+    }))
+    .filter(b => b.epubUrl || b.pdfUrl)
+}
+
+async function searchOpenLibrary(query) {
+  const res = await fetch(
+    `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&language=eng` +
+    `&fields=key,title,author_name,cover_i,ia,public_scan_b&limit=40`
+  )
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return (data.docs || [])
+    .filter(d => d.public_scan_b && d.ia?.length > 0)
+    .slice(0, 20)
+    .map(d => {
+      const ia = d.ia[0]
+      return {
+        id:      `ol-${d.key}`,
+        title:   d.title,
+        author:  d.author_name?.[0] || 'Unknown',
+        cover:   d.cover_i
+          ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`
+          : null,
+        stat:    'Internet Archive',
+        epubUrl: `https://archive.org/download/${ia}/${ia}.epub`,
+        pdfUrl:  `https://archive.org/download/${ia}/${ia}.pdf`,
+      }
+    })
+}
+
+async function searchStandardEbooks(query) {
+  const res = await fetch(`/api/standard-ebooks/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return (data.books || []).map((b, i) => ({
+    id:      `se-${i}`,
+    title:   b.title,
+    author:  b.author,
+    cover:   b.coverUrl || null,
+    stat:    'Standard Ebooks',
+    epubUrl: b.epubUrl,
+    pdfUrl:  null,
+  }))
+}
+
+async function runSearch(source, query) {
+  if (source === 'gutenberg') return searchGutenberg(query)
+  if (source === 'openlib')   return searchOpenLibrary(query)
+  if (source === 'standard')  return searchStandardEbooks(query)
+  return []
+}
+
+// ── Components ───────────────────────────────────────────────────────
 function SearchIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
@@ -20,33 +116,34 @@ function SearchIcon() {
   )
 }
 
-function BookResult({ book, adding, onAdd }) {
-  const rawAuthor = book.authors[0]?.name || 'Unknown'
-  const author = rawAuthor.includes(',')
-    ? rawAuthor.split(',').reverse().join(' ').trim()
-    : rawAuthor
-
-  const coverUrl = book.formats['image/jpeg'] || book.formats['image/png']
-  const epubUrl  = book.formats['application/epub+zip'] || book.formats['application/epub+xml']
+function BookRow({ book, adding, onAdd }) {
+  const hasDl = book.epubUrl || book.pdfUrl
+  const fmt = book.epubUrl && book.pdfUrl ? 'EPUB · PDF'
+            : book.epubUrl                ? 'EPUB'
+            : book.pdfUrl                 ? 'PDF'
+            : null
 
   return (
     <div className="disc-book">
       <div className="disc-cover">
-        {coverUrl
-          ? <img src={coverUrl} alt={book.title} />
+        {book.cover
+          ? <img src={book.cover} alt={book.title} loading="lazy" />
           : <div className="disc-cover-ph">{book.title[0]}</div>
         }
       </div>
       <div className="disc-meta">
         <div className="disc-title">{book.title}</div>
-        <div className="disc-author">{author}</div>
-        <div className="disc-dl">{(book.download_count || 0).toLocaleString()} reads</div>
+        <div className="disc-author">{book.author}</div>
+        <div className="disc-dl">
+          {book.stat}
+          {fmt && <span style={{ marginLeft: 6, opacity: 0.55 }}>{fmt}</span>}
+        </div>
       </div>
-      {epubUrl
+      {hasDl
         ? (
           <button
             className="disc-add"
-            onClick={() => onAdd(book, epubUrl, coverUrl)}
+            onClick={() => onAdd(book)}
             disabled={adding}
             aria-label="Add to library"
           >
@@ -58,15 +155,17 @@ function BookResult({ book, adding, onAdd }) {
             }
           </button>
         )
-        : <span className="disc-no-epub">No EPUB</span>
+        : <span className="disc-no-epub">No download</span>
       }
     </div>
   )
 }
 
+// ── Screen ───────────────────────────────────────────────────────────
 export default function DiscoverScreen() {
   const navigate = useNavigate()
 
+  const [source,  setSource]  = useState('gutenberg')
   const [query,   setQuery]   = useState('')
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -77,42 +176,73 @@ export default function DiscoverScreen() {
   const timerRef = useRef(null)
   const inputRef = useRef(null)
 
+  // Re-search when source changes (if there's already a query)
+  useEffect(() => {
+    setResults(null)
+    setError(null)
+    if (!query.trim()) return
+    doSearch(query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source])
+
+  // Debounced search on query change
   useEffect(() => {
     if (!query.trim()) { setResults(null); setError(null); return }
     clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(async () => {
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await fetch(`${GUTENDEX}/?search=${encodeURIComponent(query)}&languages=en`)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = await res.json()
-        setResults(data.results || [])
-      } catch {
-        setError('Search failed — check your connection.')
-        setResults(null)
-      } finally {
-        setLoading(false)
-      }
-    }, 500)
+    timerRef.current = setTimeout(() => doSearch(query), 500)
     return () => clearTimeout(timerRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
 
-  async function handleAdd(book, epubUrl, coverUrl) {
+  async function doSearch(q) {
+    setLoading(true)
+    setError(null)
+    try {
+      const books = await runSearch(source, q)
+      setResults(books)
+    } catch {
+      setError('Search failed — check your connection.')
+      setResults(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleAdd(book) {
     setAdding(a => ({ ...a, [book.id]: true }))
     setAddMsg(null)
     try {
-      const proxyUrl = `/api/gutenberg/proxy?url=${encodeURIComponent(epubUrl)}`
-      const res = await fetch(proxyUrl)
-      if (!res.ok) throw new Error(`Download failed (${res.status})`)
-      const blob = await res.blob()
-      const filename = book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + '.epub'
-      const file = new File([blob], filename, { type: 'application/epub+zip' })
+      // Try EPUB first, PDF as fallback
+      const candidates = []
+      if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })
+      if (book.pdfUrl)  candidates.push({ url: book.pdfUrl,  type: 'pdf'  })
+
+      let blob = null
+      let fileType = null
+
+      for (const { url, type } of candidates) {
+        const proxyUrl = `/api/gutenberg/proxy?url=${encodeURIComponent(url)}`
+        const res = await fetch(proxyUrl)
+        if (res.ok) {
+          blob     = await res.blob()
+          fileType = type
+          break
+        }
+      }
+
+      if (!blob) throw new Error('No downloadable format found for this book')
+
+      const ext      = fileType === 'pdf' ? '.pdf' : '.epub'
+      const mime     = fileType === 'pdf' ? 'application/pdf' : 'application/epub+zip'
+      const filename = book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + ext
+      const file     = new File([blob], filename, { type: mime })
+
       const result = await ingestFile(file)
       const bookId = typeof result === 'object' ? result.bookId : result
       if (!bookId) throw new Error('Book was not saved correctly — please try again.')
+
       const updates = { mode: 'listen' }
-      if (coverUrl) updates.cover = coverUrl
+      if (book.cover) updates.cover = book.cover
       await db.books.update(bookId, updates)
       navigate(`/book/${bookId}`)
     } catch (err) {
@@ -121,16 +251,33 @@ export default function DiscoverScreen() {
     }
   }
 
+  const currentSource = SOURCES.find(s => s.id === source)
+
   return (
     <div className="screen">
       <header className="screen-header">
         <h1 className="screen-title display">Discover</h1>
-        <div className="search-bar">
+
+        {/* Source tabs */}
+        <div className="src-tabs">
+          {SOURCES.map(s => (
+            <button
+              key={s.id}
+              className={`src-tab${source === s.id ? ' src-tab--active' : ''}`}
+              onClick={() => setSource(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search input */}
+        <div className="search-bar" style={{ marginTop: 10 }}>
           <SearchIcon />
           <input
             ref={inputRef}
             type="search"
-            placeholder="Search title or author…"
+            placeholder={`Search ${currentSource?.label}…`}
             value={query}
             onChange={e => setQuery(e.target.value)}
             className="search-input"
@@ -140,7 +287,9 @@ export default function DiscoverScreen() {
               style={{ background: 'none', border: 'none', padding: '0 4px', cursor: 'pointer', color: 'var(--text-secondary)' }}
               onClick={() => { setQuery(''); setResults(null); inputRef.current?.focus() }}
             >
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
             </button>
           )}
         </div>
@@ -153,25 +302,27 @@ export default function DiscoverScreen() {
             <h3>Try searching</h3>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {QUICK_SEARCHES.map(({ label, q }) => (
-              <button
-                key={label}
-                className="disc-quick-chip"
-                onClick={() => setQuery(q)}
-              >
+            {QUICK[source].map(({ label, q }) => (
+              <button key={label} className="disc-quick-chip" onClick={() => setQuery(q)}>
                 {label}
               </button>
             ))}
           </div>
 
           <div className="section-label" style={{ padding: '20px 0 6px' }}>
-            <h3>Sources</h3>
+            <h3>Source</h3>
           </div>
           <div className="discover-sources">
-            {['Project Gutenberg — 70,000+ free books', 'English language only', 'Public domain classics'].map(src => (
-              <div key={src} className="source-chip">
+            {[
+              currentSource?.sub,
+              source === 'openlib'   ? 'EPUB + PDF available'    : null,
+              source === 'gutenberg' ? 'EPUB + PDF where available' : null,
+              source === 'standard'  ? 'EPUB only · Premium formatting' : null,
+              'Public domain · Free to download',
+            ].filter(Boolean).map(txt => (
+              <div key={txt} className="source-chip">
                 <span className="source-chip__dot" />
-                <span>{src}</span>
+                <span>{txt}</span>
               </div>
             ))}
           </div>
@@ -197,16 +348,16 @@ export default function DiscoverScreen() {
         results.length === 0
           ? (
             <p style={{ padding: '24px 16px', fontSize: 14, color: 'var(--text-secondary)' }}>
-              No results for "{query}"
+              No results for "{query}" on {currentSource?.label}
             </p>
           )
           : (
             <div className="disc-list">
               <div className="section-label" style={{ padding: '12px 16px 4px' }}>
-                <h3>{results.length} results</h3>
+                <h3>{results.length} results · {currentSource?.label}</h3>
               </div>
               {results.map(book => (
-                <BookResult
+                <BookRow
                   key={book.id}
                   book={book}
                   adding={!!adding[book.id]}
