@@ -229,8 +229,8 @@ export default function BookDetailScreen() {
                   {genState
                     ? `Chapter ${genState.current} of ${genState.total}…`
                     : audioReadyCount > 0
-                    ? `${audioReadyCount} of ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} ready · use in Read mode`
-                    : 'Generate AI narration synced with text for Read mode'}
+                    ? `${audioReadyCount} of ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} ready · plays offline in Listen & Read modes`
+                    : 'Pre-generate AI narration for offline listening'}
                 </div>
                 {genState && (
                   <div className="tts-gen-bar">

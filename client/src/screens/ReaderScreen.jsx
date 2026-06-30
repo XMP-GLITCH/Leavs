@@ -156,7 +156,7 @@ export default function ReaderScreen() {
   }, [])
 
   useEffect(() => {
-    if (!audioChunk?.data || !playerRef.current || book?.mode === 'listen') return
+    if (!audioChunk?.data || !playerRef.current) return
     setAudioReady(false)
     setIsPlaying(false)
     setCurrentTime(0)
@@ -171,14 +171,13 @@ export default function ReaderScreen() {
     })
   }, [audioChunk?.id, book?.mode])
 
-  // ── EdgeTtsPlayer lifecycle (listen mode — no pre-generated audio needed) ──
+  // ── EdgeTtsPlayer lifecycle (listen mode — only when no pre-gen audio) ──
   useEffect(() => {
-    if (book?.mode !== 'listen') {
-      // Clean up speech player if mode was switched away from listen
+    if (book?.mode !== 'listen' || audioChunk?.data) {
+      // Clean up speech player when switching away from listen or when pre-gen audio is available
       if (speechPlayerRef.current) {
         speechPlayerRef.current.destroy()
         speechPlayerRef.current = null
-        setAudioReady(false)
         setIsPlaying(false)
       }
       return
@@ -240,7 +239,7 @@ export default function ReaderScreen() {
     }
 
     return () => { sp.destroy(); speechPlayerRef.current = null }
-  }, [chapter?.id, book?.mode, book?.voice])
+  }, [chapter?.id, book?.mode, book?.voice, audioChunk?.id])
 
   // ── Media Session API (lock-screen / earphone controls) ─────────────────
   useEffect(() => {
@@ -530,12 +529,13 @@ export default function ReaderScreen() {
   }
 
   // ── Audio controls ───────────────────────────────────────────────────────
-  const isListenMode = book?.mode === 'listen'
-  const focusMode    = activeNav === 'focus'
+  const isListenMode   = book?.mode === 'listen'
+  const focusMode      = activeNav === 'focus'
+  const usePregenAudio = isListenMode && !!audioChunk?.data
 
   function handlePlayPause() {
     if (!audioReady) return
-    if (isListenMode) {
+    if (isListenMode && !usePregenAudio) {
       const sp = speechPlayerRef.current
       if (!sp) return
       if (isPlaying) { sp.pause(); setIsPlaying(false) }
@@ -551,7 +551,7 @@ export default function ReaderScreen() {
     if (!audioReady || !audioDuration) return
     const rect  = e.currentTarget.getBoundingClientRect()
     const ratio = (e.clientX - rect.left) / rect.width
-    if (isListenMode) {
+    if (isListenMode && !usePregenAudio) {
       const charPos = Math.round(ratio * audioDuration)
       speechPlayerRef.current?.seek(charPos)
       setCurrentTime(charPos)
@@ -564,13 +564,13 @@ export default function ReaderScreen() {
   function handleSpeedToggle() {
     const next = (speedIdx + 1) % SPEEDS.length
     setSpeedIdx(next)
-    if (isListenMode) speechPlayerRef.current?.setRate(SPEEDS[next])
-    else              playerRef.current?.setSpeed(SPEEDS[next])
+    if (isListenMode && !usePregenAudio) speechPlayerRef.current?.setRate(SPEEDS[next])
+    else                                  playerRef.current?.setSpeed(SPEEDS[next])
   }
 
   function handleSkip(delta) {
     if (!audioReady) return
-    if (isListenMode) {
+    if (isListenMode && !usePregenAudio) {
       const sp = speechPlayerRef.current
       if (!sp) return
       sp.seek(currentTime + Math.round(delta * 12 * SPEEDS[speedIdx]))
@@ -830,15 +830,19 @@ export default function ReaderScreen() {
 
         {/* Badge — absolute top right */}
         <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
-          {isListenMode
+          {usePregenAudio
             ? audioReady
-              ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
+              ? <div className="sync-badge" style={{ color: 'var(--moss-light)', borderColor: 'var(--moss-light)' }}><div className="sync-dot" style={{ background: 'var(--moss-light)' }} />OFFLINE</div>
               : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
-            : audioReady
-              ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
-              : chapter.audioStatus === 'ready'
-                ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
-                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
+            : isListenMode
+              ? audioReady
+                ? <div className="sync-badge"><div className="sync-dot" />LIVE</div>
+                : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>LOADING</div>
+              : audioReady
+                ? <div className="sync-badge"><div className="sync-dot" />SYNCED</div>
+                : chapter.audioStatus === 'ready'
+                  ? <div className="sync-badge" style={{ opacity: 0.5 }}>Loading…</div>
+                  : <div className="sync-badge" style={{ opacity: 0.4, fontSize: 9 }}>NO AUDIO</div>
           }
           {isListenMode && audioDevice === 'earbuds' && (
             <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: 3 }}>
@@ -875,8 +879,8 @@ export default function ReaderScreen() {
         <div className="pl-time">
           {(() => {
             const cps = 12 * SPEEDS[speedIdx]
-            const cur = isListenMode ? currentTime  / cps : currentTime
-            const dur = isListenMode ? audioDuration / cps : audioDuration
+            const cur = (isListenMode && !usePregenAudio) ? currentTime   / cps : currentTime
+            const dur = (isListenMode && !usePregenAudio) ? audioDuration  / cps : audioDuration
             return (
               <>
                 <span>{fmtTime(cur)}</span>
