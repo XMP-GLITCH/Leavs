@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
@@ -55,6 +56,43 @@ export default function BookDetailScreen() {
     [bookId],
   )
   const progress = useLiveQuery(() => db.progress.get(bookId), [bookId])
+
+  const audioReadyCount = useLiveQuery(
+    () => db.chapters.where('bookId').equals(bookId)
+          .filter(c => c.audioStatus === 'ready').count(),
+    [bookId],
+  ) ?? 0
+
+  const [genState, setGenState] = useState(null) // { current, total } | null
+
+  async function generateAllAudio() {
+    const chs = await db.chapters.where('bookId').equals(bookId).sortBy('index')
+    setGenState({ current: 0, total: chs.length })
+    for (let i = 0; i < chs.length; i++) {
+      const ch = chs[i]
+      setGenState({ current: i + 1, total: chs.length })
+      await db.chapters.update(ch.id, { audioStatus: 'generating' })
+      try {
+        const r = await fetch('/api/tts/chunk', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ text: ch.text.slice(0, 5000), voice: book?.voice || 'en-US-JennyNeural' }),
+        })
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const { audio, wordBoundaries } = await r.json()
+        const bytes   = Uint8Array.from(atob(audio), c => c.charCodeAt(0))
+        const chunk   = { bookId, chapterId: ch.id, data: bytes.buffer, wordBoundaries: wordBoundaries || [] }
+        const existing = await db.audioChunks.where('chapterId').equals(ch.id).first()
+        if (existing) await db.audioChunks.update(existing.id, chunk)
+        else          await db.audioChunks.add(chunk)
+        await db.chapters.update(ch.id, { audioStatus: 'ready' })
+      } catch {
+        await db.chapters.update(ch.id, { audioStatus: 'none' })
+      }
+      await new Promise(res => setTimeout(res, 400))
+    }
+    setGenState(null)
+  }
 
   if (!book) return null
 
@@ -170,6 +208,49 @@ export default function BookDetailScreen() {
                 </option>
               ))}
             </select>
+          </div>
+        )}
+
+        {/* Read-along audio generation */}
+        {chapters?.length > 0 && (
+          <div className="gen-cta" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
+              <div className="gen-cta-ico">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" />
+                </svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 3 }}>
+                  Read-along audio
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  {genState
+                    ? `Chapter ${genState.current} of ${genState.total}…`
+                    : audioReadyCount > 0
+                    ? `${audioReadyCount} of ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} ready · use in Read mode`
+                    : 'Generate AI narration synced with text for Read mode'}
+                </div>
+                {genState && (
+                  <div className="tts-gen-bar">
+                    <div className="tts-gen-bar__fill" style={{ width: `${Math.round((genState.current / genState.total) * 100)}%` }} />
+                  </div>
+                )}
+              </div>
+            </div>
+            <button
+              className="gen-cta-btn"
+              style={{ width: '100%', textAlign: 'center', opacity: genState ? 0.6 : 1 }}
+              disabled={genState != null}
+              onClick={generateAllAudio}
+            >
+              {genState
+                ? `Generating ${genState.current}/${genState.total}…`
+                : audioReadyCount > 0
+                ? `Regenerate (${audioReadyCount}/${chapters.length} ready)`
+                : `Generate audio · ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''}`}
+            </button>
           </div>
         )}
 

@@ -63,24 +63,28 @@ export default function StatsScreen() {
     () => allBooks.reduce((sum, b) => sum + (b.listenedSeconds || 0), 0),
     [allBooks],
   )
+  const totalReadSecs = useMemo(
+    () => allBooks.reduce((sum, b) => sum + (b.readSeconds || 0), 0),
+    [allBooks],
+  )
 
   function fmtListenTime(secs) {
     const h = Math.floor(secs / 3600)
     const m = Math.floor((secs % 3600) / 60)
     if (h > 0) return `${h}h ${m}m`
     if (m > 0) return `${m}m`
-    return `${secs}s`
+    return secs > 0 ? `${secs}s` : '—'
   }
 
   const STATS = [
     {
-      label: 'Total listened',
+      label: 'Time listening',
       value: fmtListenTime(totalListenSecs),
-      Icon: () => <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
+      Icon: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>,
     },
     {
-      label: 'Books in library',
-      value: String(bkCount),
+      label: 'Time reading',
+      value: fmtListenTime(totalReadSecs),
       Icon: () => <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>,
     },
     {
@@ -131,16 +135,23 @@ export default function StatsScreen() {
         ))}
       </div>
 
-      <div className="lvr">
-        <div className="lvr-t">How you consume</div>
-        <div className="lvr-bar">
-          <div className="lvr-fill" style={{ width: '0%' }} />
-        </div>
-        <div className="lvr-leg">
-          <span><span className="ldot" style={{ background: 'var(--moss)' }} />Listening · 0%</span>
-          <span><span className="ldot" style={{ background: 'var(--vein)' }} />Reading · 100%</span>
-        </div>
-      </div>
+      {(() => {
+        const total      = totalListenSecs + totalReadSecs
+        const listenPct  = total > 0 ? Math.round((totalListenSecs / total) * 100) : 0
+        const readPct    = 100 - listenPct
+        return (
+          <div className="lvr">
+            <div className="lvr-t">How you consume</div>
+            <div className="lvr-bar">
+              <div className="lvr-fill" style={{ width: `${listenPct}%` }} />
+            </div>
+            <div className="lvr-leg">
+              <span><span className="ldot" style={{ background: 'var(--moss)' }} />Listening · {listenPct}%</span>
+              <span><span className="ldot" style={{ background: 'var(--vein)' }} />Reading · {readPct}%</span>
+            </div>
+          </div>
+        )
+      })()}
 
       {finishedBooks.length > 0 && (
         <div className="recent-sec">

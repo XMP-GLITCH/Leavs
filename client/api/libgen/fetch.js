@@ -13,11 +13,12 @@ const DL_SOURCES = [
 
 function findDirectLink(html) {
   // library.lol: <a href="https://download.library.lol/...">GET</a>
-  const get = html.match(/href="(https?:\/\/[^"]+)"[^>]*>[^<]*\bGET\b/i)
+  // Allow optional inner tags (<b>, <span>, etc.) wrapping the GET text
+  const get = html.match(/href="(https?:\/\/[^"]+)"[^>]*>(?:<[^>]+>)*[^<]*\bGET\b/i)
   if (get) return get[1]
 
   // libgen mirrors: GET / Download button
-  const dl = html.match(/href="(https?:\/\/[^"]+)"[^>]*>[^<]*\b(?:Download|GET)\b/i)
+  const dl = html.match(/href="(https?:\/\/[^"]+)"[^>]*>(?:<[^>]+>)*[^<]*\b(?:Download|GET)\b/i)
            || html.match(/<a[^>]+href="(https?:\/\/[^"]+\.(?:pdf|epub|djvu|fb2)[^"]*)"/i)
   if (dl) return dl[1]
 
@@ -42,13 +43,9 @@ export default async function handler(req, res) {
       const link = findDirectLink(html)
       if (!link) continue
       // Resolve relative links against the page origin
-      if (link.startsWith('http')) {
-        directUrl = link
-      } else {
-        const o = new URL(pageUrl)
-        directUrl = `${o.origin}${link}`
-      }
-      baseOrigin = new URL(pageUrl).origin
+      const o = new URL(pageUrl)
+      directUrl = link.startsWith('http') ? link : `${o.origin}${link}`
+      baseOrigin = o.origin
       break
     } catch { continue }
   }
@@ -70,8 +67,8 @@ export default async function handler(req, res) {
     })
     if (!file.ok) throw new Error(`HTTP ${file.status}`)
     const buf = Buffer.from(await file.arrayBuffer())
-    res.setHeader('Content-Type',   file.headers.get('content-type')   || 'application/octet-stream')
-    res.setHeader('Content-Length', file.headers.get('content-length') || buf.length)
+    res.setHeader('Content-Type',   file.headers.get('content-type') || 'application/octet-stream')
+    res.setHeader('Content-Length', buf.length)
     res.status(200).send(buf)
   } catch (err) {
     res.status(502).json({ error: `Download failed: ${err.message}` })

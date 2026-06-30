@@ -44,9 +44,8 @@ export function isBlocked(status, html) {
       || h.includes('access denied')
       || h.includes('checking your browser')
       || h.includes('enable javascript and cookies')
-      || h.includes('ray id')            // Cloudflare error pages always show Ray ID
-      || h.includes('ddos-guard')        // DDoS-Guard (used by some LibGen mirrors)
-      || h.includes('please wait')
+      || (h.includes('ray id') && h.includes('cloudflare'))
+      || h.includes('ddos-guard')
 }
 
 // ── Single URL direct fetch (fast path) ─────────────────────────────
@@ -105,8 +104,8 @@ export async function scrape(url, { extraHeaders = {}, referer = null } = {}) {
 }
 
 /**
- * Try mirrors in parallel for the fast path, then ScraperAPI on the
- * first mirror only. Total budget: ~4s (parallel direct) + ~20s (ScraperAPI) = 24s.
+ * Try mirrors in parallel for the fast path, then ScraperAPI on up to 2 mirrors,
+ * then free proxy on up to 2 mirrors. Total budget: ~4s + ~40s max = 44s.
  */
 export async function scrapeWithMirrors(mirrors, queryPath, { referer } = {}) {
   // ── Fast path: all mirrors in parallel ──────────────────────────────
@@ -116,17 +115,20 @@ export async function scrapeWithMirrors(mirrors, queryPath, { referer } = {}) {
   const winner = settled.find(r => r.status === 'fulfilled')
   if (winner) return winner.value
 
-  // ── ScraperAPI on first mirror (single call to stay under timeout) ───
+  // ── ScraperAPI on first 2 mirrors ───────────────────────────────────
   if (KEY) {
-    try { return await scraperFetch(mirrors[0] + queryPath) }
-    catch (e) {
-      // If key is bad, surface that error immediately — no point trying free proxy
-      if (e.message.includes('401')) throw e
+    for (const mirror of mirrors.slice(0, 2)) {
+      try { return await scraperFetch(mirror + queryPath) }
+      catch (e) {
+        if (e.message.includes('401')) throw e
+      }
     }
   }
 
-  // ── Free proxy last resort ───────────────────────────────────────────
-  try { return await freeFetch(mirrors[0] + queryPath) } catch { /* ignore */ }
+  // ── Free proxy last resort on first 2 mirrors ───────────────────────
+  for (const mirror of mirrors.slice(0, 2)) {
+    try { return await freeFetch(mirror + queryPath) } catch { /* ignore */ }
+  }
 
   const directErrors = settled.map((r, i) =>
     `${mirrors[i].replace('https://', '')}: ${r.reason?.message ?? 'failed'}`

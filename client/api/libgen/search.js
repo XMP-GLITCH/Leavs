@@ -30,10 +30,16 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: `Library Genesis: ${err.message}` })
   }
 
-  // Sanity-check: real LibGen results pages always contain md5= links
   if (!html.includes('md5=') && !html.includes('/book/index.php')) {
-    console.error('[libgen] Unexpected page (possible CF block), first 600 chars:', html.slice(0, 600))
-    return res.status(502).json({ error: 'Library Genesis returned an unexpected page — search blocked or query returned no results.' })
+    const lc = html.toLowerCase()
+    const cfBlocked = lc.includes('just a moment') || lc.includes('cf-challenge')
+                   || lc.includes('_cf_chl_') || lc.includes('checking your browser')
+                   || lc.includes('ddos-guard')
+    if (cfBlocked) {
+      console.error('[libgen] CF block page, first 600 chars:', html.slice(0, 600))
+      return res.status(502).json({ error: 'Library Genesis is blocking our request. Try again later.' })
+    }
+    return res.status(200).json({ books: [] })
   }
 
   const books = []

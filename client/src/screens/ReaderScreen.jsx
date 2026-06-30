@@ -367,6 +367,17 @@ export default function ReaderScreen() {
     return () => clearInterval(iv)
   }, [isPlaying, bookId])
 
+  // ── Read time tracking (every 30s while not playing) ─────────────────────
+  useEffect(() => {
+    if (isPlaying || !chapter?.text) return
+    const iv = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return
+      const cur = await db.books.get(bookId)
+      await db.books.update(bookId, { readSeconds: (cur?.readSeconds || 0) + 30 })
+    }, 30_000)
+    return () => clearInterval(iv)
+  }, [isPlaying, chapter?.id, bookId])
+
   // ── Chapter navigation ───────────────────────────────────────────────────
   function goToChapter(idx) {
     if (idx < 0 || (chapterCount > 0 && idx >= chapterCount)) return
@@ -520,6 +531,7 @@ export default function ReaderScreen() {
 
   // ── Audio controls ───────────────────────────────────────────────────────
   const isListenMode = book?.mode === 'listen'
+  const focusMode    = activeNav === 'focus'
 
   function handlePlayPause() {
     if (!audioReady) return
@@ -655,8 +667,23 @@ export default function ReaderScreen() {
   return (
     <div className="reader-shell">
 
+      {/* ── Focus bar — shown only in focus mode ── */}
+      {focusMode && (
+        <div className="focus-bar">
+          <button className="icon-btn icon-btn--ink" onClick={() => navigate(`/book/${id}`)} aria-label="Back">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+          </button>
+          <span className="focus-label">Focus</span>
+          <button className="icon-btn icon-btn--ink" onClick={() => setActiveNav('annotate')} aria-label="Exit focus">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* ── Header ── */}
-      <header className="rdrhdr">
+      <header className="rdrhdr" style={focusMode ? { display: 'none' } : undefined}>
         <button className="icon-btn icon-btn--ink" onClick={() => navigate(`/book/${id}`)} aria-label="Back">
           <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
         </button>
@@ -798,8 +825,8 @@ export default function ReaderScreen() {
         </div>
       )}
 
-      {/* ── Audio player — always visible in the viewport-trapped shell ── */}
-      {isListenMode && <div className="player">
+      {/* ── Audio player ── */}
+      {!focusMode && isListenMode && <div className="player">
 
         {/* Badge — absolute top right */}
         <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
@@ -930,13 +957,14 @@ export default function ReaderScreen() {
       </div>}
 
       {/* ── Reader bottom nav ── */}
-      <nav className="reader-nav">
+      <nav className="reader-nav" style={focusMode ? { display: 'none' } : undefined}>
         {READER_NAV.map(({ id: navId, label, icon, back }) => (
           <button
             key={navId}
             className={`reader-nav__item${activeNav === navId || (navId === 'notes' && showNotesPanel) ? ' reader-nav__item--active' : ''}`}
             onClick={() => {
               if (back) { navigate(`/book/${id}`); return }
+              if (navId === 'focus') { setActiveNav(prev => prev === 'focus' ? 'annotate' : 'focus'); setShowNotesPanel(false); return }
               if (navId === 'notes') { setShowNotesPanel(v => !v); return }
               setActiveNav(navId)
               setShowNotesPanel(false)
