@@ -11,7 +11,7 @@ const MIRRORS = [
 ]
 
 function stripTags(s) {
-  return (s||'').replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&#\d+;/g,'').replace(/&quot;/g,'"').trim()
+  return (s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#\d+;/g, '').replace(/&quot;/g, '"').trim()
 }
 
 export default async function handler(req, res) {
@@ -22,30 +22,53 @@ export default async function handler(req, res) {
   try {
     html = await scrapeWithMirrors(
       MIRRORS,
-      `/search?q=${encodeURIComponent(q)}&lang=en&content=book_any&filetype=pdf,epub&sort=`
+      // ext= (not filetype=), no trailing empty sort param
+      `/search?q=${encodeURIComponent(q)}&lang=en&content=book_any&ext=epub,pdf&sort=mostRelevant`
     )
   } catch (err) {
     return res.status(502).json({ error: `Anna's Archive: ${err.message}` })
   }
 
+  // Sanity-check: real Anna's results pages always have /md5/ links
+  if (!html.includes('/md5/')) {
+    console.error("[anna] Unexpected page (possible CF block), first 600 chars:", html.slice(0, 600))
+    return res.status(502).json({ error: "Anna's Archive returned an unexpected page — may be blocked or no results." })
+  }
+
   const books = []
-  for (const [, href, card] of html.matchAll(/href="(\/md5\/[a-f0-9]{32})"[^>]*>([\s\S]*?)(?=<\/a>)/gi)) {
+
+  // Match anchor tags that link to /md5/HASH pages
+  for (const [, href, card] of html.matchAll(/href="(\/md5\/[a-f0-9]{32})"[^>]*>([\s\S]*?)<\/a>/gi)) {
     if (books.length >= 20) break
     const md5M = href.match(/([a-f0-9]{32})/i)
     if (!md5M) continue
     const md5 = md5M[1].toLowerCase()
+
+    // Cover image
     const imgM  = card.match(/src="([^"]+)"/)
     const cover = imgM?.[1]?.startsWith('http') ? imgM[1] : null
+
+    // Title: first line-clamp element or <h3>
     const titleM = card.match(/class="[^"]*line-clamp[^"]*"[^>]*>([\s\S]*?)<\//)
                 || card.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i)
+                || card.match(/<div[^>]*>([\s\S]{5,120}?)<\/div>/)
     if (!titleM) continue
     const title = stripTags(titleM[1])
-    if (!title) continue
-    const lines = [...card.matchAll(/class="[^"]*line-clamp[^"]*"[^>]*>([\s\S]*?)<\//g)]
+    if (!title || title.length < 2) continue
+
+    // Author: second line-clamp element
+    const lines  = [...card.matchAll(/class="[^"]*line-clamp[^"]*"[^>]*>([\s\S]*?)<\//g)]
     const author = lines[1] ? stripTags(lines[1][1]) : 'Unknown'
-    const infoM  = card.match(/(\d+(?:\.\d+)?\s*(?:MB|KB|GB)[^<]*)/)
-    const stat   = infoM ? infoM[1].trim() : "Anna's Archive"
+
+    // File size
+    const infoM = card.match(/(\d+(?:\.\d+)?\s*(?:MB|KB|GB)[^<]*)/)
+    const stat  = infoM ? infoM[1].trim() : "Anna's Archive"
+
     books.push({ id: `anna-${md5}`, title, author, cover, md5, stat })
+  }
+
+  if (books.length === 0) {
+    console.error("[anna] Parsed 0 books. HTML snippet:", html.slice(0, 800))
   }
 
   res.status(200).json({ books })

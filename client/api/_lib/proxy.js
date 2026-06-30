@@ -35,13 +35,18 @@ function scraperUrl(target) {
 
 export function isBlocked(status, html) {
   if (status === 401 || status === 403 || status === 429) return true
-  if (!html) return true
-  return html.includes('Just a moment')
-      || html.includes('cf-challenge')
-      || html.includes('_cf_chl_')
-      || html.includes('Attention Required!')
-      || html.includes('Access denied')
-      || html.length < 200
+  if (!html || html.length < 200) return true
+  const h = html.toLowerCase()
+  return h.includes('just a moment')
+      || h.includes('cf-challenge')
+      || h.includes('_cf_chl_')
+      || h.includes('attention required')
+      || h.includes('access denied')
+      || h.includes('checking your browser')
+      || h.includes('enable javascript and cookies')
+      || h.includes('ray id')            // Cloudflare error pages always show Ray ID
+      || h.includes('ddos-guard')        // DDoS-Guard (used by some LibGen mirrors)
+      || h.includes('please wait')
 }
 
 // ── Single URL direct fetch (fast path) ─────────────────────────────

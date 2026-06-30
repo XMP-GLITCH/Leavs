@@ -71,22 +71,19 @@ async function searchGutenberg(query) {
 }
 
 async function searchOpenLibrary(query) {
-  const fields = 'key,title,author_name,cover_i,ia,public_scan_b,first_sentence,subject'
+  // Keep fields minimal — first_sentence can cause 400 on some OL API versions
+  const fields = 'key,title,author_name,cover_i,ia,has_fulltext,subject'
   const res = await fetch(
-    `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&language=eng&fields=${fields}&limit=40`
+    `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&lang=eng&fields=${fields}&limit=40`
   )
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`Open Library HTTP ${res.status}`)
   const data = await res.json()
   return (data.docs || [])
-    .filter(d => d.public_scan_b && d.ia?.length > 0)
+    .filter(d => d.has_fulltext && d.ia?.length > 0)
     .slice(0, 20)
     .map(d => {
-      const ia = d.ia[0]
-      // first_sentence can be a string or {value: string}
-      const fs  = d.first_sentence
-      const desc = fs
-        ? (typeof fs === 'string' ? fs : fs.value || null)
-        : d.subject?.slice(0, 5).join(' · ') || null
+      const ia   = d.ia[0]
+      const desc = d.subject?.slice(0, 5).join(' · ') || null
       return {
         id:          `ol-${d.key}`,
         title:       d.title,
