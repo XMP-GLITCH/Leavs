@@ -128,63 +128,138 @@ function IngestOverlay({ state, onDismiss }) {
   )
 }
 
-function YoutubeModal({ onClose, onImport }) {
-  const [url, setUrl]       = useState('')
-  const [error, setError]   = useState(null)
-  const [loading, setLoading] = useState(false)
+const YT_ICON = (
+  <svg viewBox="0 0 24 24" fill="white" width="20" height="20">
+    <path d="M23 7s-.3-2-1.2-2.8c-1.1-1.2-2.4-1.2-3-1.3C16.2 2.8 12 2.8 12 2.8s-4.2 0-6.8.2c-.6.1-1.9.1-3 1.3C1.3 5 1 7 1 7S.7 9.1.7 11.3v2c0 2.1.3 4.2.3 4.2s.3 2 1.2 2.8c1.1 1.2 2.6 1.1 3.3 1.2C7.5 21.7 12 21.7 12 21.7s4.2 0 6.8-.2c.6-.1 1.9-.1 3-1.3.9-.8 1.2-2.8 1.2-2.8s.3-2.1.3-4.2v-2C23.3 9.1 23 7 23 7zM9.7 15.5V8.3l8.1 3.6-8.1 3.6z"/>
+  </svg>
+)
 
-  async function handleSubmit(e) {
+function fmtDuration(s) {
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = s % 60
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${ss}s` : `${ss}s`
+}
+
+function YoutubeModal({ onClose, onDownload }) {
+  const [url, setUrl]       = useState('')
+  const [info, setInfo]     = useState(null)   // { title, channel, durationSeconds }
+  const [step, setStep]     = useState('url')  // 'url' | 'confirm' | 'downloading'
+  const [progress, setProgress] = useState('')
+  const [error, setError]   = useState(null)
+
+  async function handleFetchInfo(e) {
     e.preventDefault()
     if (!url.trim()) return
     setError(null)
-    setLoading(true)
+    setStep('url')
+    setInfo(null)
     try {
-      const res = await fetch(`/api/youtube/transcript?url=${encodeURIComponent(url.trim())}`)
+      setProgress('Fetching video info…')
+      const res  = await fetch(`/api/youtube/audio?url=${encodeURIComponent(url.trim())}&info=1`)
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch transcript')
-      onImport(data)
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch video info')
+      setInfo(data)
+      setStep('confirm')
+      setProgress('')
     } catch (err) {
       setError(err.message)
-      setLoading(false)
+      setProgress('')
+    }
+  }
+
+  async function handleDownload() {
+    setStep('downloading')
+    setError(null)
+    try {
+      const resp = await fetch(`/api/youtube/audio?url=${encodeURIComponent(url.trim())}`)
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}))
+        throw new Error(data.error || `Download failed (${resp.status})`)
+      }
+
+      const contentLength = parseInt(resp.headers.get('content-length') || '0')
+      const reader = resp.body.getReader()
+      const chunks = []
+      let received = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+        received += value.length
+        setProgress(contentLength > 0
+          ? `Downloading… ${Math.round((received / contentLength) * 100)}%`
+          : `Downloading… ${(received / 1024 / 1024).toFixed(1)} MB`)
+      }
+
+      const total = chunks.reduce((s, c) => s + c.length, 0)
+      const buf   = new Uint8Array(total)
+      let offset  = 0
+      for (const chunk of chunks) { buf.set(chunk, offset); offset += chunk.length }
+
+      onDownload({ ...info, arrayBuffer: buf.buffer })
+    } catch (err) {
+      setError(err.message)
+      setStep('confirm')
+      setProgress('')
     }
   }
 
   return (
-    <div className="ingest-overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="ingest-overlay" onClick={e => { if (e.target === e.currentTarget && step !== 'downloading') onClose() }}>
       <div className="ingest-card" style={{ gap: 14 }}>
-        <div className="ingest-icon" style={{ background: 'var(--soil)' }}>
-          <svg viewBox="0 0 24 24" fill="white" width="20" height="20">
-            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.17 8.17 0 0 0 4.78 1.52V6.76a4.85 4.85 0 0 1-1.01-.07z"/>
-          </svg>
-        </div>
-        <div className="ingest-title">Import from YouTube</div>
-        <div className="ingest-msg" style={{ marginBottom: 4 }}>
-          Paste a YouTube URL to import the video's transcript as a book.
-        </div>
-        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input
-            type="url"
-            className="voice-select"
-            style={{ width: '100%', boxSizing: 'border-box' }}
-            placeholder="https://youtube.com/watch?v=..."
-            value={url}
-            onChange={e => { setUrl(e.target.value); setError(null) }}
-            autoFocus
-            disabled={loading}
-          />
-          {error && <div style={{ fontSize: 12, color: 'var(--vein)', textAlign: 'center' }}>{error}</div>}
-          <button
-            type="submit"
-            className="btn btn--primary"
-            disabled={loading || !url.trim()}
-            style={{ opacity: loading || !url.trim() ? 0.6 : 1 }}
-          >
-            {loading ? 'Fetching transcript…' : 'Import'}
-          </button>
-          {!loading && (
+        <div className="ingest-icon" style={{ background: '#FF0000' }}>{YT_ICON}</div>
+        <div className="ingest-title">Import YouTube audio</div>
+
+        {step === 'url' && (
+          <form onSubmit={handleFetchInfo} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="ingest-msg" style={{ marginBottom: 0 }}>
+              Downloads the audio track and saves it as a listenable book.
+            </div>
+            <input
+              type="url"
+              className="voice-select"
+              style={{ width: '100%', boxSizing: 'border-box' }}
+              placeholder="https://youtube.com/watch?v=..."
+              value={url}
+              onChange={e => { setUrl(e.target.value); setError(null) }}
+              autoFocus
+            />
+            {progress && <div className="ingest-msg">{progress}</div>}
+            {error && <div style={{ fontSize: 12, color: 'var(--vein)', textAlign: 'center' }}>{error}</div>}
+            <button type="submit" className="btn btn--primary" disabled={!url.trim()}>
+              Next
+            </button>
             <button type="button" className="ingest-dismiss" onClick={onClose}>Cancel</button>
-          )}
-        </form>
+          </form>
+        )}
+
+        {step === 'confirm' && info && (
+          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ background: 'var(--parchment-deep)', borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', marginBottom: 2 }}>{info.title}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {info.channel} · {fmtDuration(info.durationSeconds)}
+              </div>
+            </div>
+            <div className="ingest-msg" style={{ marginBottom: 0 }}>
+              Audio will be saved as a book. Open it in Listen mode to play.
+            </div>
+            <button className="btn btn--primary" onClick={handleDownload}>
+              Download audio
+            </button>
+            <button className="ingest-dismiss" onClick={() => setStep('url')}>Back</button>
+          </div>
+        )}
+
+        {step === 'downloading' && (
+          <>
+            <div className="ingest-spinner" />
+            <div className="ingest-msg">{progress || 'Downloading…'}</div>
+            {error && <div style={{ fontSize: 12, color: 'var(--vein)', textAlign: 'center' }}>{error}</div>}
+          </>
+        )}
       </div>
     </div>
   )
@@ -210,44 +285,35 @@ export default function LibraryScreen() {
     if (action === 'import-audio') setShowYoutube(true)
   }
 
-  async function handleYoutubeImport({ title, channel, text }) {
+  async function handleAudioImport({ title, channel, durationSeconds, arrayBuffer }) {
     setShowYoutube(false)
     setIngestState({ status: 'parsing', message: `Saving "${title}"…` })
     try {
-      // Split into chapters every ~12,000 characters to stay readable
-      const CHUNK = 12_000
-      const chapters = []
-      let remaining = text.trim()
-      while (remaining.length > 0) {
-        const slice = remaining.slice(0, CHUNK)
-        // Break at sentence end if possible
-        const cutAt = slice.length < remaining.length
-          ? (slice.lastIndexOf('. ') + 1 || slice.length)
-          : slice.length
-        chapters.push(slice.slice(0, cutAt).trim())
-        remaining = remaining.slice(cutAt).trim()
-      }
-
       const bookId = await db.books.add({
         title,
         author:       channel,
         cover:        null,
         progress:     0,
-        mode:         'read',
+        mode:         'listen',
         addedAt:      Date.now(),
         lastOpenedAt: Date.now(),
       })
-      for (let i = 0; i < chapters.length; i++) {
-        await db.chapters.add({
-          bookId,
-          index:       i,
-          title:       chapters.length === 1 ? 'Transcript' : `Part ${i + 1}`,
-          text:        chapters[i],
-          audioStatus: 'none',
-        })
-      }
+      const chapterId = await db.chapters.add({
+        bookId,
+        index:       0,
+        title:       'Audio',
+        text:        `[Audio imported from YouTube · ${Math.round(durationSeconds / 60)} min]`,
+        audioStatus: 'ready',
+      })
+      await db.audioChunks.add({
+        bookId,
+        chapterId,
+        data:           arrayBuffer,
+        duration:       durationSeconds,
+        wordBoundaries: [],
+      })
       setIngestState(null)
-      navigate(`/book/${bookId}`)
+      navigate(`/book/${bookId}/read?chapter=0`)
     } catch (err) {
       setIngestState({ status: 'error', message: err.message })
     }
@@ -365,7 +431,7 @@ export default function LibraryScreen() {
       {showYoutube && (
         <YoutubeModal
           onClose={() => setShowYoutube(false)}
-          onImport={handleYoutubeImport}
+          onDownload={handleAudioImport}
         />
       )}
       <FAB onAction={handleFabAction} />
