@@ -168,6 +168,9 @@ export default function ReaderScreen() {
       setAudioDuration(playerRef.current.duration)
       setWaveform(computeWaveform(playerRef.current.buffer, BARS))
       playerRef.current.setSpeed(SPEEDS[speedIdx])
+    }).catch(err => {
+      console.error('[AudioPlayer] decode failed:', err)
+      setTtsError(`Audio failed to decode: ${err.message}`)
     })
   }, [audioChunk?.id, book?.mode])
 

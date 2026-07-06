@@ -43,9 +43,19 @@ export class AudioPlayer {
 
   async play() {
     if (!this.buffer || this.isPlaying) return
-    const ctx = this._ctx()
+    let ctx = this._ctx()
+
     if (ctx.state === 'suspended') {
       try { await ctx.resume() } catch {}
+    }
+
+    // iOS Safari: contexts created outside a user gesture may never unsuspend
+    // via resume(). Recreate the context from within this tap handler — fresh
+    // contexts auto-start when created inside a user interaction.
+    if (ctx.state !== 'running') {
+      try { ctx.close() } catch {}
+      this.ctx = new AudioContext()
+      ctx = this.ctx
     }
 
     this.source                    = ctx.createBufferSource()
