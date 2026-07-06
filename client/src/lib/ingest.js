@@ -108,25 +108,39 @@ async function parsePDF(file, onProgress) {
     onProgress?.('Scanned PDF detected — loading OCR engine…')
     try {
       const { createWorker } = await import('tesseract.js')
-      const worker = await createWorker('eng')
 
       const pagesToOcr = Math.min(pdf.numPages, OCR_PAGE_LIMIT)
       if (pdf.numPages > OCR_PAGE_LIMIT)
         onProgress?.(`Large document — OCR limited to first ${OCR_PAGE_LIMIT} pages…`)
 
-      const ocrTexts = []
+      // Render all pages to canvas first (fast), then OCR with 3 parallel workers
+      onProgress?.('Rendering pages…')
+      const canvases = []
       for (let p = 1; p <= pagesToOcr; p++) {
-        onProgress?.(`OCR page ${p} of ${pagesToOcr}…`)
         const page     = await pdf.getPage(p)
         const viewport = page.getViewport({ scale: 1.5 })
         const canvas   = document.createElement('canvas')
         canvas.width   = viewport.width
         canvas.height  = viewport.height
         await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
-        const { data: { text } } = await worker.recognize(canvas)
-        ocrTexts.push(text)
+        canvases.push(canvas)
       }
-      await worker.terminate()
+
+      const CONCURRENCY = 3
+      const workers = await Promise.all(
+        Array.from({ length: CONCURRENCY }, () => createWorker('eng'))
+      )
+
+      const ocrTexts = new Array(pagesToOcr)
+      let done = 0
+      await Promise.all(canvases.map((canvas, i) =>
+        workers[i % CONCURRENCY].recognize(canvas).then(({ data: { text } }) => {
+          ocrTexts[i] = text
+          done++
+          onProgress?.(`OCR ${done} of ${pagesToOcr} pages…`)
+        })
+      ))
+      await Promise.all(workers.map(w => w.terminate()))
 
       return { title, author, cover: null, chapters: splitChapters(ocrTexts.join('\n\n')) }
     } catch (e) {
