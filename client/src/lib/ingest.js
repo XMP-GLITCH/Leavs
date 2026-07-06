@@ -61,6 +61,8 @@ async function parseTXT(file) {
 }
 
 // ── PDF ──────────────────────────────────────────────────────────────────────
+const OCR_PAGE_LIMIT = 200  // max pages to OCR in one import
+
 async function parsePDF(file, onProgress) {
   onProgress?.('Loading PDF reader…')
 
@@ -87,6 +89,7 @@ async function parsePDF(file, onProgress) {
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
   const author = meta.info?.Author || 'Unknown'
 
+  // ── Step 1: try text layer extraction ──────────────────────────────────────
   const pageTexts = []
   for (let p = 1; p <= pdf.numPages; p++) {
     if (p % 10 === 0) onProgress?.(`Reading page ${p} of ${pdf.numPages}…`)
@@ -95,6 +98,44 @@ async function parsePDF(file, onProgress) {
       const content = await page.getTextContent()
       pageTexts.push(content.items.map(it => it.str).join(' '))
     } catch { pageTexts.push('') }
+  }
+
+  const totalChars   = pageTexts.reduce((s, t) => s + t.trim().length, 0)
+  const avgCharsPage = pdf.numPages > 0 ? totalChars / pdf.numPages : 0
+
+  // ── Step 2: if text is sparse, fall back to OCR ────────────────────────────
+  if (avgCharsPage < 50) {
+    onProgress?.('Scanned PDF detected — loading OCR engine…')
+    try {
+      const { createWorker } = await import('tesseract.js')
+      const worker = await createWorker('eng')
+
+      const pagesToOcr = Math.min(pdf.numPages, OCR_PAGE_LIMIT)
+      if (pdf.numPages > OCR_PAGE_LIMIT)
+        onProgress?.(`Large document — OCR limited to first ${OCR_PAGE_LIMIT} pages…`)
+
+      const ocrTexts = []
+      for (let p = 1; p <= pagesToOcr; p++) {
+        onProgress?.(`OCR page ${p} of ${pagesToOcr}…`)
+        const page     = await pdf.getPage(p)
+        const viewport = page.getViewport({ scale: 1.5 })
+        const canvas   = document.createElement('canvas')
+        canvas.width   = viewport.width
+        canvas.height  = viewport.height
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
+        const { data: { text } } = await worker.recognize(canvas)
+        ocrTexts.push(text)
+      }
+      await worker.terminate()
+
+      return { title, author, cover: null, chapters: splitChapters(ocrTexts.join('\n\n')) }
+    } catch (e) {
+      // OCR unavailable (offline or blocked) — store with a clear placeholder
+      const msg = e.message?.includes('fetch') || e.message?.includes('network')
+        ? '[OCR requires an internet connection on first use to download the language model. Connect and re-import this file.]'
+        : `[This PDF is image-based (scanned). OCR failed: ${e.message}. Try converting it to EPUB or searchable PDF first.]`
+      return { title, author, cover: null, chapters: [{ title: 'Chapter 1', text: msg }] }
+    }
   }
 
   return { title, author, cover: null, chapters: splitChapters(pageTexts.join('\n\n')) }
