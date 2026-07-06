@@ -17,10 +17,10 @@ const ACTIONS = [
   },
   {
     id: 'import-audio',
-    label: 'Import audio',
-    desc: 'Attach to an existing book',
+    label: 'Import from YouTube',
+    desc: 'Save a video transcript as a book',
     iconClass: 'fab-action__icon--soil',
-    pills: ['YouTube', 'MP3', 'M4A'],
+    pills: ['YouTube', 'Transcript'],
     pillVariant: 'soil',
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">

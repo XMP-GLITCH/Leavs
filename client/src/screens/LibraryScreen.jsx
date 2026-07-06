@@ -128,10 +128,73 @@ function IngestOverlay({ state, onDismiss }) {
   )
 }
 
+function YoutubeModal({ onClose, onImport }) {
+  const [url, setUrl]       = useState('')
+  const [error, setError]   = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!url.trim()) return
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/youtube/transcript?url=${encodeURIComponent(url.trim())}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch transcript')
+      onImport(data)
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="ingest-overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="ingest-card" style={{ gap: 14 }}>
+        <div className="ingest-icon" style={{ background: 'var(--soil)' }}>
+          <svg viewBox="0 0 24 24" fill="white" width="20" height="20">
+            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.17 8.17 0 0 0 4.78 1.52V6.76a4.85 4.85 0 0 1-1.01-.07z"/>
+          </svg>
+        </div>
+        <div className="ingest-title">Import from YouTube</div>
+        <div className="ingest-msg" style={{ marginBottom: 4 }}>
+          Paste a YouTube URL to import the video's transcript as a book.
+        </div>
+        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <input
+            type="url"
+            className="voice-select"
+            style={{ width: '100%', boxSizing: 'border-box' }}
+            placeholder="https://youtube.com/watch?v=..."
+            value={url}
+            onChange={e => { setUrl(e.target.value); setError(null) }}
+            autoFocus
+            disabled={loading}
+          />
+          {error && <div style={{ fontSize: 12, color: 'var(--vein)', textAlign: 'center' }}>{error}</div>}
+          <button
+            type="submit"
+            className="btn btn--primary"
+            disabled={loading || !url.trim()}
+            style={{ opacity: loading || !url.trim() ? 0.6 : 1 }}
+          >
+            {loading ? 'Fetching transcript…' : 'Import'}
+          </button>
+          {!loading && (
+            <button type="button" className="ingest-dismiss" onClick={onClose}>Cancel</button>
+          )}
+        </form>
+      </div>
+    </div>
+  )
+}
+
 export default function LibraryScreen() {
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
-  const [ingestState, setIngestState] = useState(null)
+  const [ingestState, setIngestState]   = useState(null)
+  const [showYoutube, setShowYoutube]   = useState(false)
 
   const books = useLiveQuery(
     () => db.books.orderBy('lastOpenedAt').reverse().toArray(),
@@ -143,7 +206,51 @@ export default function LibraryScreen() {
   const gridBooks    = books ?? []
 
   async function handleFabAction(action) {
-    if (action === 'upload') fileInputRef.current?.click()
+    if (action === 'upload')       fileInputRef.current?.click()
+    if (action === 'import-audio') setShowYoutube(true)
+  }
+
+  async function handleYoutubeImport({ title, channel, text }) {
+    setShowYoutube(false)
+    setIngestState({ status: 'parsing', message: `Saving "${title}"…` })
+    try {
+      // Split into chapters every ~12,000 characters to stay readable
+      const CHUNK = 12_000
+      const chapters = []
+      let remaining = text.trim()
+      while (remaining.length > 0) {
+        const slice = remaining.slice(0, CHUNK)
+        // Break at sentence end if possible
+        const cutAt = slice.length < remaining.length
+          ? (slice.lastIndexOf('. ') + 1 || slice.length)
+          : slice.length
+        chapters.push(slice.slice(0, cutAt).trim())
+        remaining = remaining.slice(cutAt).trim()
+      }
+
+      const bookId = await db.books.add({
+        title,
+        author:       channel,
+        cover:        null,
+        progress:     0,
+        mode:         'read',
+        addedAt:      Date.now(),
+        lastOpenedAt: Date.now(),
+      })
+      for (let i = 0; i < chapters.length; i++) {
+        await db.chapters.add({
+          bookId,
+          index:       i,
+          title:       chapters.length === 1 ? 'Transcript' : `Part ${i + 1}`,
+          text:        chapters[i],
+          audioStatus: 'none',
+        })
+      }
+      setIngestState(null)
+      navigate(`/book/${bookId}`)
+    } catch (err) {
+      setIngestState({ status: 'error', message: err.message })
+    }
   }
 
   async function handleFileSelected(e) {
@@ -255,6 +362,12 @@ export default function LibraryScreen() {
       />
 
       <IngestOverlay state={ingestState} onDismiss={() => setIngestState(null)} />
+      {showYoutube && (
+        <YoutubeModal
+          onClose={() => setShowYoutube(false)}
+          onImport={handleYoutubeImport}
+        />
+      )}
       <FAB onAction={handleFabAction} />
     </div>
   )
