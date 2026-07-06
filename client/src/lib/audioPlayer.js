@@ -41,10 +41,12 @@ export class AudioPlayer {
 
   get duration() { return this.buffer?.duration ?? 0 }
 
-  play() {
+  async play() {
     if (!this.buffer || this.isPlaying) return
     const ctx = this._ctx()
-    if (ctx.state === 'suspended') ctx.resume()
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume() } catch {}
+    }
 
     this.source                    = ctx.createBufferSource()
     this.source.buffer             = this.buffer

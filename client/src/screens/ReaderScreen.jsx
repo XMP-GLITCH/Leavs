@@ -543,8 +543,13 @@ export default function ReaderScreen() {
       return
     }
     if (!playerRef.current) return
-    if (isPlaying) { playerRef.current.pause(); setIsPlaying(false) }
-    else           { playerRef.current.play();  setIsPlaying(true)  }
+    if (isPlaying) {
+      playerRef.current.pause()
+      setIsPlaying(false)
+    } else {
+      setIsPlaying(true)
+      playerRef.current.play().catch(() => setIsPlaying(false))
+    }
   }
 
   function handleWaveformClick(e) {
