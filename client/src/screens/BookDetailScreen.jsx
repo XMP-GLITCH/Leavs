@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
+import { splitTtsChunks } from '../lib/edgeTtsPlayer'
 import LeafProgress from '../components/common/LeafProgress'
 
 const VOICES = [
@@ -63,35 +64,116 @@ export default function BookDetailScreen() {
     [bookId],
   ) ?? 0
 
-  const [genState, setGenState] = useState(null) // { current, total } | null
+  const [genState, setGenState] = useState(null) // { current, total, sub } | null
+  const [genError, setGenError] = useState(null)
 
   async function generateAllAudio() {
     const chs = await db.chapters.where('bookId').equals(bookId).sortBy('index')
-    setGenState({ current: 0, total: chs.length })
-    for (let i = 0; i < chs.length; i++) {
-      const ch = chs[i]
-      setGenState({ current: i + 1, total: chs.length })
-      await db.chapters.update(ch.id, { audioStatus: 'generating' })
-      try {
-        const r = await fetch('/api/tts/chunk', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ text: ch.text.slice(0, 5000), voice: book?.voice || 'en-US-JennyNeural' }),
-        })
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const { audio, wordBoundaries } = await r.json()
-        const bytes   = Uint8Array.from(atob(audio), c => c.charCodeAt(0))
-        const chunk   = { bookId, chapterId: ch.id, data: bytes.buffer, wordBoundaries: wordBoundaries || [] }
-        const existing = await db.audioChunks.where('chapterId').equals(ch.id).first()
-        if (existing) await db.audioChunks.update(existing.id, chunk)
-        else          await db.audioChunks.add(chunk)
-        await db.chapters.update(ch.id, { audioStatus: 'ready' })
-      } catch {
-        await db.chapters.update(ch.id, { audioStatus: 'none' })
+    setGenError(null)
+    setGenState({ current: 0, total: chs.length, sub: 0 })
+    // Used only to measure each chunk's real duration so merged word
+    // boundaries stay aligned — playback itself never uses Web Audio.
+    const measureCtx = new AudioContext()
+    try {
+      for (let i = 0; i < chs.length; i++) {
+        const ch = chs[i]
+        setGenState({ current: i + 1, total: chs.length, sub: 0 })
+        // Imported audio (e.g. YouTube) must not be overwritten with TTS of its placeholder text
+        if (ch.text?.startsWith('[Audio imported')) continue
+        await db.chapters.update(ch.id, { audioStatus: 'generating' })
+        try {
+          const chunks     = splitTtsChunks(ch.text || '')
+          const parts      = []
+          const boundaries = []
+          let timeOffset   = 0
+
+          for (let c = 0; c < chunks.length; c++) {
+            const { text, charStart } = chunks[c]
+
+            // Retry transient failures (server restart, cold start, network blip)
+            // so one flaky chunk doesn't abort the whole chapter.
+            let payload = null
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const r = await fetch('/api/tts/chunk', {
+                  method:  'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body:    JSON.stringify({ text, voice: book?.voice || 'en-US-JennyNeural' }),
+                })
+                if (!r.ok) throw new Error(`HTTP ${r.status}`)
+                payload = await r.json().catch(() => { throw new Error('empty response') })
+                if (!payload?.audio) throw new Error('no audio in response')
+                break
+              } catch (e) {
+                if (attempt === 2) throw e
+                await new Promise(res => setTimeout(res, 800 * (attempt + 1)))
+              }
+            }
+            const { audio, wordBoundaries } = payload
+            const bytes = Uint8Array.from(atob(audio), c2 => c2.charCodeAt(0))
+            parts.push(bytes)
+
+            for (const b of wordBoundaries || []) {
+              boundaries.push({
+                ...b,
+                start:      (b.start ?? 0) + timeOffset,
+                textOffset: b.textOffset != null ? b.textOffset + charStart : null,
+              })
+            }
+
+            try {
+              const buf = await measureCtx.decodeAudioData(bytes.buffer.slice(0))
+              timeOffset += buf.duration
+            } catch {
+              // Fall back to the last boundary + a beat of trailing silence
+              const last = (wordBoundaries || [])[(wordBoundaries || []).length - 1]
+              timeOffset += last ? (last.start ?? 0) + (last.duration ?? 0) + 0.5 : 0
+            }
+            setGenState({ current: i + 1, total: chs.length, sub: (c + 1) / chunks.length })
+          }
+
+          const totalLen = parts.reduce((s, p) => s + p.length, 0)
+          const merged   = new Uint8Array(totalLen)
+          let off = 0
+          for (const p of parts) { merged.set(p, off); off += p.length }
+
+          const row = {
+            bookId,
+            chapterId:      ch.id,
+            data:           merged.buffer,
+            mime:           'audio/mpeg',
+            duration:       timeOffset,
+            wordBoundaries: boundaries,
+          }
+          const existing = await db.audioChunks.where('chapterId').equals(ch.id).first()
+          if (existing) await db.audioChunks.update(existing.id, row)
+          else          await db.audioChunks.add(row)
+          await db.chapters.update(ch.id, { audioStatus: 'ready' })
+        } catch (e) {
+          await db.chapters.update(ch.id, { audioStatus: 'none' })
+          setGenError(`Chapter ${i + 1} failed: ${e.message}`)
+        }
       }
-      await new Promise(res => setTimeout(res, 400))
+    } finally {
+      measureCtx.close().catch(() => {})
+      setGenState(null)
     }
-    setGenState(null)
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${book?.title}"? This removes the book, its audio, highlights and bookmarks.`)) return
+    await db.transaction('rw',
+      [db.books, db.chapters, db.audioChunks, db.highlights, db.bookmarks, db.vocabulary, db.progress],
+      async () => {
+        await db.chapters.where('bookId').equals(bookId).delete()
+        await db.audioChunks.where('bookId').equals(bookId).delete()
+        await db.highlights.where('bookId').equals(bookId).delete()
+        await db.bookmarks.where('bookId').equals(bookId).delete()
+        await db.vocabulary.where('bookId').equals(bookId).delete()
+        await db.progress.delete(bookId)
+        await db.books.delete(bookId)
+      })
+    navigate('/library')
   }
 
   if (!book) return null
@@ -234,11 +316,14 @@ export default function BookDetailScreen() {
                 </div>
                 {genState && (
                   <div className="tts-gen-bar">
-                    <div className="tts-gen-bar__fill" style={{ width: `${Math.round((genState.current / genState.total) * 100)}%` }} />
+                    <div className="tts-gen-bar__fill" style={{ width: `${Math.round(((genState.current - 1 + (genState.sub || 0)) / genState.total) * 100)}%` }} />
                   </div>
                 )}
               </div>
             </div>
+            {genError && (
+              <div style={{ fontSize: 11, color: '#C0392B', width: '100%' }}>{genError}</div>
+            )}
             <button
               className="gen-cta-btn"
               style={{ width: '100%', textAlign: 'center', opacity: genState ? 0.6 : 1 }}
@@ -292,6 +377,16 @@ export default function BookDetailScreen() {
               ? (book.progress || 0) > 0 ? 'Continue listening' : 'Start listening'
               : (book.progress || 0) > 0 ? 'Continue reading'   : 'Start reading'
             }
+          </button>
+          <button
+            onClick={handleDelete}
+            style={{
+              width: '100%', marginTop: 12, background: 'none', cursor: 'pointer',
+              border: '1px solid rgba(192,57,43,0.35)', color: '#C0392B',
+              borderRadius: 12, padding: '12px', fontSize: 13, fontWeight: 600,
+            }}
+          >
+            Delete book
           </button>
         </div>
 

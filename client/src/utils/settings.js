@@ -5,9 +5,7 @@ export const DEFAULTS = {
   playbackSpeed:     1.0,
   defaultMode:       'read',
   sleepTimerMinutes: 30,
-  notifGen:          true,
-  notifStreak:       false,
-  updates:           true,
+  profileName:       'Reader',
 }
 
 const k = key => `leavs.${key}`

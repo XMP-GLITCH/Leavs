@@ -1,113 +1,102 @@
-// Wraps Web Audio API for playback with speed control and time callbacks
+// Audio playback via an HTMLAudioElement fed by a Blob URL.
+//
+// Web Audio (decodeAudioData + AudioBufferSourceNode) is deliberately NOT used
+// for playback: mobile browsers suspend AudioContexts when the screen locks or
+// the app is backgrounded, and decoding expands the whole file to raw PCM in
+// memory (~1.3 GB per hour of audio). An <audio> element keeps playing with
+// the screen off, works with lock-screen Media Session controls, and decodes
+// incrementally. Web Audio is used only to decode SMALL files for the
+// waveform visualisation.
+
+const WAVEFORM_DECODE_LIMIT = 6_000_000  // bytes — skip waveform decode above this
 
 export class AudioPlayer {
   constructor() {
-    this.ctx         = null
-    this.source      = null
-    this.buffer      = null
-    this.startTime   = 0      // ctx.currentTime when play() was last called
-    this.pauseOffset = 0      // seconds into buffer when paused
-    this.isPlaying   = false
-    this.speed       = 1.0
-    this._rafId      = null
+    this.audio         = new Audio()
+    this.audio.preload = 'auto'
+    this.buffer        = null   // decoded AudioBuffer for waveform only (small files)
+    this.speed         = 1.0
+    this.isPlaying     = false
+    this._url          = null
+    this._rafId        = null
 
-    this.onTimeUpdate = null  // (currentTime, duration) => void
-    this.onEnded      = null  // () => void
-  }
+    this.onTimeUpdate = null    // (currentTime, duration) => void
+    this.onEnded      = null    // () => void
 
-  _ctx() {
-    if (!this.ctx || this.ctx.state === 'closed') this.ctx = new AudioContext()
-    return this.ctx
-  }
-
-  async load(arrayBuffer) {
-    const ctx = this._ctx()
-    // ArrayBuffer must be copied — decodeAudioData detaches it
-    this.buffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
-    this._stopSource()
-    this.pauseOffset = 0
-    this.isPlaying   = false
-    this._stopRaf()
-  }
-
-  get currentTime() {
-    if (!this.buffer) return 0
-    if (this.isPlaying) {
-      const elapsed = (this._ctx().currentTime - this.startTime) * this.speed
-      return Math.min(this.pauseOffset + elapsed, this.buffer.duration)
-    }
-    return this.pauseOffset
-  }
-
-  get duration() { return this.buffer?.duration ?? 0 }
-
-  async play() {
-    if (!this.buffer || this.isPlaying) return
-    let ctx = this._ctx()
-
-    if (ctx.state === 'suspended') {
-      try { await ctx.resume() } catch {}
-    }
-
-    // iOS Safari: contexts created outside a user gesture may never unsuspend
-    // via resume(). Recreate the context from within this tap handler — fresh
-    // contexts auto-start when created inside a user interaction.
-    if (ctx.state !== 'running') {
-      try { ctx.close() } catch {}
-      this.ctx = new AudioContext()
-      ctx = this.ctx
-    }
-
-    this.source                    = ctx.createBufferSource()
-    this.source.buffer             = this.buffer
-    this.source.playbackRate.value = this.speed
-    this.source.connect(ctx.destination)
-    this.source.onended = () => {
-      if (!this.isPlaying) return  // manual stop — ignore
-      this.isPlaying   = false
-      this.pauseOffset = 0
+    this.audio.onended = () => {
+      this.isPlaying = false
       this._stopRaf()
       this.onEnded?.()
     }
+  }
 
-    this.startTime = ctx.currentTime
-    this.source.start(0, this.pauseOffset)
+  async load(arrayBuffer, mime = 'audio/mpeg') {
+    this._stopRaf()
+    this.audio.pause()
+    this.isPlaying = false
+    if (this._url) { URL.revokeObjectURL(this._url); this._url = null }
+
+    this._url = URL.createObjectURL(new Blob([arrayBuffer], { type: mime || 'audio/mpeg' }))
+    this.audio.src          = this._url
+    this.audio.playbackRate = this.speed
+
+    await new Promise((resolve, reject) => {
+      const ok      = () => { cleanup(); resolve() }
+      const fail    = () => { cleanup(); reject(new Error('This audio format is not supported on this device')) }
+      const cleanup = () => {
+        this.audio.removeEventListener('loadedmetadata', ok)
+        this.audio.removeEventListener('error', fail)
+      }
+      this.audio.addEventListener('loadedmetadata', ok)
+      this.audio.addEventListener('error', fail)
+      this.audio.load()
+    })
+
+    // Decode a copy for the waveform only when the file is small — large files
+    // would expand to hundreds of MB of PCM and crash mobile tabs.
+    this.buffer = null
+    if (arrayBuffer.byteLength < WAVEFORM_DECODE_LIMIT) {
+      try {
+        const ctx   = new AudioContext()
+        this.buffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
+        ctx.close().catch(() => {})
+      } catch { this.buffer = null }
+    }
+  }
+
+  get currentTime() { return this.audio.currentTime || 0 }
+
+  get duration() {
+    const d = this.audio.duration
+    return isFinite(d) ? d : 0
+  }
+
+  async play() {
+    if (!this.audio.src || this.isPlaying) return
+    this.audio.playbackRate = this.speed
+    await this.audio.play()
     this.isPlaying = true
     this._startRaf()
   }
 
   pause() {
     if (!this.isPlaying) return
-    this.pauseOffset = this.currentTime
-    this._stopSource()
+    this.audio.pause()
     this.isPlaying = false
     this._stopRaf()
-    this.onTimeUpdate?.(this.pauseOffset, this.duration)
+    this.onTimeUpdate?.(this.currentTime, this.duration)
   }
 
   seek(seconds) {
-    const was = this.isPlaying
-    if (was) this.pause()
-    this.pauseOffset = Math.max(0, Math.min(seconds, this.duration))
-    if (was) this.play()
-    else this.onTimeUpdate?.(this.pauseOffset, this.duration)
+    if (!this.audio.src) return
+    const max = this.duration || seconds
+    this.audio.currentTime = Math.max(0, Math.min(seconds, max))
+    if (!this.isPlaying) this.onTimeUpdate?.(this.currentTime, this.duration)
   }
 
   setSpeed(rate) {
-    const offset = this.currentTime
-    const was    = this.isPlaying
-    if (was) this.pause()
-    this.speed       = rate
-    this.pauseOffset = offset
-    if (was) this.play()
-  }
-
-  _stopSource() {
-    if (this.source) {
-      try { this.source.stop() } catch {}
-      this.source.disconnect()
-      this.source = null
-    }
+    this.speed = rate
+    this.audio.playbackRate = rate
   }
 
   _startRaf() {
@@ -123,9 +112,12 @@ export class AudioPlayer {
   }
 
   destroy() {
-    this._stopSource()
     this._stopRaf()
-    this.ctx?.close()
+    this.audio.pause()
+    this.audio.removeAttribute('src')
+    try { this.audio.load() } catch {}
+    if (this._url) { URL.revokeObjectURL(this._url); this._url = null }
+    this.buffer = null
   }
 }
 

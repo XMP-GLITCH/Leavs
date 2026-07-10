@@ -3,7 +3,8 @@ import { useState, useEffect } from 'react'
 import { db } from '../db/db'
 import { useSettings, setSetting } from '../utils/settings'
 
-const SPEED_OPTS  = [0.75, 1.0, 1.25, 1.5, 2.0]
+// Must match SPEEDS in ReaderScreen
+const SPEED_OPTS  = [0.75, 1.0, 1.2, 1.5, 2.0]
 const FONT_OPTS   = [14, 16, 18, 20, 22, 24]
 const SLEEP_OPTS  = [15, 30, 45, 60]
 
@@ -24,16 +25,10 @@ function PrefRow({ title, subtitle, children }) {
   )
 }
 
-function Toggle({ on, onChange }) {
-  return (
-    <div className={`toggle${on ? ' toggle--on' : ''}`} onClick={() => onChange(!on)} />
-  )
-}
-
 export default function ProfileScreen() {
   const [s, set] = useSettings(
     'fontSize', 'playbackSpeed', 'defaultMode',
-    'sleepTimerMinutes', 'notifGen', 'notifStreak', 'updates'
+    'sleepTimerMinutes', 'profileName'
   )
 
   const vocabCount  = useLiveQuery(() => db.vocabulary.count(), []) ?? 0
@@ -44,8 +39,7 @@ export default function ProfileScreen() {
   const [storage, setStorage]       = useState({ used: 0, quota: 0 })
   const [showAllVocab, setShowAllVocab] = useState(false)
   // 'idle' | 'checking' | 'downloading' | 'installing' | 'uptodate'
-  const [updatePhase, setUpdatePhase]       = useState('idle')
-  const [updateProgress, setUpdateProgress] = useState(0)
+  const [updatePhase, setUpdatePhase] = useState('idle')
 
   useEffect(() => {
     navigator.storage?.estimate().then(e =>
@@ -73,7 +67,6 @@ export default function ProfileScreen() {
   async function checkForUpdates() {
     if (!('serviceWorker' in navigator)) return
     setUpdatePhase('checking')
-    setUpdateProgress(0)
 
     try {
       const reg = await navigator.serviceWorker.getRegistration()
@@ -84,28 +77,11 @@ export default function ProfileScreen() {
       reg.addEventListener('updatefound', () => {
         found = true
         setUpdatePhase('downloading')
-        setUpdateProgress(5)
-
-        // Simulate download progress with small random ticks
-        let prog = 5
-        const ticker = setInterval(() => {
-          prog = Math.min(prog + Math.random() * 18, 80)
-          setUpdateProgress(Math.round(prog))
-        }, 350)
-
         const sw = reg.installing
-        if (!sw) { clearInterval(ticker); return }
-
+        if (!sw) return
         sw.addEventListener('statechange', () => {
-          if (sw.state === 'installed' || sw.state === 'activating') {
-            clearInterval(ticker)
-            setUpdatePhase('installing')
-            setUpdateProgress(90)
-          }
-          if (sw.state === 'activated') {
-            setUpdateProgress(100)
-            setTimeout(() => window.location.reload(), 600)
-          }
+          if (sw.state === 'installed' || sw.state === 'activating') setUpdatePhase('installing')
+          if (sw.state === 'activated') setTimeout(() => window.location.reload(), 600)
         })
       }, { once: true })
 
@@ -115,12 +91,17 @@ export default function ProfileScreen() {
       setTimeout(() => {
         if (!found) {
           setUpdatePhase('uptodate')
-          setTimeout(() => { setUpdatePhase('idle'); setUpdateProgress(0) }, 2500)
+          setTimeout(() => setUpdatePhase('idle'), 2500)
         }
       }, 4000)
     } catch {
       setUpdatePhase('idle')
     }
+  }
+
+  function editName() {
+    const n = window.prompt('Your name', s.profileName)
+    if (n?.trim()) set('profileName', n.trim())
   }
 
   const visibleVocab = showAllVocab ? allVocab : allVocab.slice(0, 5)
@@ -133,7 +114,7 @@ export default function ProfileScreen() {
           <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" /></svg>
         </div>
         <div className="prof-name">
-          <h2>Neville</h2>
+          <h2 onClick={editName} style={{ cursor: 'pointer' }} title="Tap to edit your name">{s.profileName}</h2>
           <p>{bookCount} book{bookCount !== 1 ? 's' : ''} · {hlCount} highlight{hlCount !== 1 ? 's' : ''}</p>
         </div>
       </div>
@@ -240,14 +221,6 @@ export default function ProfileScreen() {
           <div className="pref-label">App Settings</div>
           <div className="pref-card">
 
-            <PrefRow title="Generation alerts" subtitle="When a chapter finishes generating">
-              <Toggle on={s.notifGen} onChange={v => set('notifGen', v)} />
-            </PrefRow>
-
-            <PrefRow title="Streak reminders" subtitle="Daily reading nudge">
-              <Toggle on={s.notifStreak} onChange={v => set('notifStreak', v)} />
-            </PrefRow>
-
             <PrefRow title="Sleep timer default" subtitle="Auto-stop after">
               <div className="seg-ctrl">
                 {SLEEP_OPTS.map(m => (
@@ -257,10 +230,6 @@ export default function ProfileScreen() {
                   </button>
                 ))}
               </div>
-            </PrefRow>
-
-            <PrefRow title="App updates" subtitle="Prompt when a new version is ready">
-              <Toggle on={s.updates} onChange={v => set('updates', v)} />
             </PrefRow>
 
           </div>
@@ -294,15 +263,10 @@ export default function ProfileScreen() {
                 <p style={{ color: updatePhase === 'uptodate' ? 'var(--vein-light)' : undefined }}>
                   {updatePhase === 'idle'        && 'Tap to check for a new version'}
                   {updatePhase === 'checking'    && 'Checking for updates…'}
-                  {updatePhase === 'downloading' && `Downloading update — ${updateProgress}%`}
+                  {updatePhase === 'downloading' && 'Downloading update…'}
                   {updatePhase === 'installing'  && 'Installing… restarting shortly'}
                   {updatePhase === 'uptodate'    && 'App is up to date'}
                 </p>
-                {(updatePhase === 'downloading' || updatePhase === 'installing') && (
-                  <div className="update-bar">
-                    <div className="update-bar__fill" style={{ width: `${updateProgress}%` }} />
-                  </div>
-                )}
               </div>
             </div>
 

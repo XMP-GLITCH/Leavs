@@ -1,5 +1,6 @@
 import { db }   from '../db/db'
 import JSZip     from 'jszip'
+import { getSetting } from '../utils/settings'
 
 // FileReader wrappers — file.arrayBuffer() and file.text() only landed in
 // Safari 14.1 (iOS 14.5). FileReader works all the way back to iOS 5.
@@ -63,7 +64,7 @@ async function parseTXT(file) {
 // ── PDF ──────────────────────────────────────────────────────────────────────
 const OCR_PAGE_LIMIT = 200  // max pages to OCR in one import
 
-async function parsePDF(file, onProgress) {
+async function parsePDF(file, onProgress, ctl) {
   onProgress?.('Loading PDF reader…')
 
   let pdfjsMod
@@ -92,6 +93,7 @@ async function parsePDF(file, onProgress) {
   // ── Step 1: try text layer extraction ──────────────────────────────────────
   const pageTexts = []
   for (let p = 1; p <= pdf.numPages; p++) {
+    if (ctl?.isCancelled()) throw new Error('Import cancelled')
     if (p % 10 === 0) onProgress?.(`Reading page ${p} of ${pdf.numPages}…`)
     try {
       const page    = await pdf.getPage(p)
@@ -113,37 +115,49 @@ async function parsePDF(file, onProgress) {
       if (pdf.numPages > OCR_PAGE_LIMIT)
         onProgress?.(`Large document — OCR limited to first ${OCR_PAGE_LIMIT} pages…`)
 
-      // Render all pages to canvas first (fast), then OCR with 3 parallel workers
-      onProgress?.('Rendering pages…')
-      const canvases = []
-      for (let p = 1; p <= pagesToOcr; p++) {
-        const page     = await pdf.getPage(p)
-        const viewport = page.getViewport({ scale: 1.5 })
-        const canvas   = document.createElement('canvas')
-        canvas.width   = viewport.width
-        canvas.height  = viewport.height
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
-        canvases.push(canvas)
-      }
+      // OCR is slow — give it a real time budget instead of the default 90s
+      ctl?.extendTimeout(Math.min(120_000 + pagesToOcr * 15_000, 1_500_000))
 
       const CONCURRENCY = 3
       const workers = await Promise.all(
-        Array.from({ length: CONCURRENCY }, () => createWorker('eng'))
+        Array.from({ length: Math.min(CONCURRENCY, pagesToOcr) }, () => createWorker('eng'))
       )
 
-      const ocrTexts = new Array(pagesToOcr)
-      let done = 0
-      await Promise.all(canvases.map((canvas, i) =>
-        workers[i % CONCURRENCY].recognize(canvas).then(({ data: { text } }) => {
-          ocrTexts[i] = text
+      // Render + OCR page by page in a rolling queue — never hold more than
+      // one canvas per worker in memory (rendering all pages upfront needs
+      // gigabytes on large scans and crashes mobile browsers).
+      const ocrTexts = new Array(pagesToOcr).fill('')
+      let nextPage = 0
+      let done     = 0
+
+      async function runWorker(worker) {
+        while (true) {
+          const p = nextPage++
+          if (p >= pagesToOcr || ctl?.isCancelled()) return
+          const page     = await pdf.getPage(p + 1)
+          const viewport = page.getViewport({ scale: 1.5 })
+          const canvas   = document.createElement('canvas')
+          canvas.width   = viewport.width
+          canvas.height  = viewport.height
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
+          const { data: { text } } = await worker.recognize(canvas)
+          canvas.width = canvas.height = 0  // release the bitmap immediately
+          ocrTexts[p] = text
           done++
           onProgress?.(`OCR ${done} of ${pagesToOcr} pages…`)
-        })
-      ))
-      await Promise.all(workers.map(w => w.terminate()))
+        }
+      }
 
+      try {
+        await Promise.all(workers.map(runWorker))
+      } finally {
+        await Promise.all(workers.map(w => w.terminate().catch(() => {})))
+      }
+
+      if (ctl?.isCancelled()) throw new Error('Import cancelled')
       return { title, author, cover: null, chapters: splitChapters(ocrTexts.join('\n\n')) }
     } catch (e) {
+      if (e.message === 'Import cancelled') throw e
       // OCR unavailable (offline or blocked) — store with a clear placeholder
       const msg = e.message?.includes('fetch') || e.message?.includes('network')
         ? '[OCR requires an internet connection on first use to download the language model. Connect and re-import this file.]'
@@ -385,27 +399,39 @@ async function parseEPUB(file, onProgress) {
 export async function ingestFile(file, onProgress) {
   const ext = (file.name.split('.').pop() ?? '').toLowerCase()
 
-  const timeout = new Promise((_, reject) =>
-    setTimeout(
-      () => reject(new Error('Import timed out — try a smaller file or TXT format.')),
-      90000
-    )
-  )
+  // Cancellable timeout: when it fires, the parse loops see the flag and abort
+  // instead of finishing in the background and saving a ghost book. Slow steps
+  // (OCR) can extend the deadline to a budget that matches the work.
+  let cancelled = false
+  let timer     = null
+  let armTimer  = null
+  const timeout = new Promise((_, reject) => {
+    armTimer = ms => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        cancelled = true
+        reject(new Error('Import timed out — try a smaller file or TXT format.'))
+      }, ms)
+    }
+    armTimer(90_000)
+  })
+  const ctl = {
+    isCancelled:   () => cancelled,
+    extendTimeout: ms => armTimer?.(ms),
+  }
 
   async function doIngest() {
     onProgress?.('Reading file…')
 
     let parsed
-    try {
-      if      (ext === 'pdf')  parsed = await parsePDF(file, onProgress)
-      else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
-      else if (ext === 'txt')  parsed = await parseTXT(file)
-      else if (ext === 'pptx') parsed = await parsePPTX(file, onProgress)
-      else if (ext === 'docx') parsed = await parseDOCX(file, onProgress)
-      else throw new Error(`Unsupported format .${ext} — use PDF, EPUB, DOCX, PPTX or TXT`)
-    } catch (e) {
-      throw e
-    }
+    if      (ext === 'pdf')  parsed = await parsePDF(file, onProgress, ctl)
+    else if (ext === 'epub') parsed = await parseEPUB(file, onProgress)
+    else if (ext === 'txt')  parsed = await parseTXT(file)
+    else if (ext === 'pptx') parsed = await parsePPTX(file, onProgress)
+    else if (ext === 'docx') parsed = await parseDOCX(file, onProgress)
+    else throw new Error(`Unsupported format .${ext} — use PDF, EPUB, DOCX, PPTX or TXT`)
+
+    if (cancelled) throw new Error('Import cancelled')
 
     onProgress?.(`Saving "${parsed.title}"…`)
 
@@ -416,7 +442,7 @@ export async function ingestFile(file, onProgress) {
         author:       parsed.author,
         cover:        parsed.cover ?? null,
         progress:     0,
-        mode:         'read',
+        mode:         getSetting('defaultMode') === 'listen' ? 'listen' : 'read',
         addedAt:      Date.now(),
         lastOpenedAt: Date.now(),
       })
@@ -440,5 +466,7 @@ export async function ingestFile(file, onProgress) {
     return { bookId, hasCover: !!parsed.cover }
   }
 
-  return Promise.race([doIngest(), timeout])
+  const work = doIngest()
+  work.catch(() => {})  // avoid an unhandled rejection when the timeout wins the race
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
 }

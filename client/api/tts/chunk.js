@@ -27,16 +27,25 @@ export default async function handler(req, res) {
     const buf        = Buffer.from(await audio.arrayBuffer())
     const audioB64   = buf.toString('base64')
 
-    // subtitle: array of word boundary events from Microsoft Edge TTS
-    // Each entry has: text (word), offset (100ns audio time), duration (100ns), textOffset (char index)
+    // subtitle: array of word boundary events from Microsoft Edge TTS.
+    // The library does not emit character offsets, so locate each word in the
+    // source text sequentially — word-tap seek and karaoke need textOffset.
+    let searchPos = 0
     const wordBoundaries = (subtitle ?? [])
       .filter(s => s?.text)
-      .map(s => ({
-        word:      s.text,
-        start:     (s.offset   ?? 0) / 1e7,   // seconds into the audio
-        duration:  (s.duration ?? 0) / 1e7,
-        textOffset: s.textOffset ?? s.charOffset ?? null,  // char index in chunk text (may be null)
-      }))
+      .map(s => {
+        let textOffset = s.textOffset ?? s.charOffset ?? null
+        if (textOffset == null) {
+          const idx = text.indexOf(s.text, searchPos)
+          if (idx >= 0) { textOffset = idx; searchPos = idx + s.text.length }
+        }
+        return {
+          word:      s.text,
+          start:     (s.offset   ?? 0) / 1e7,   // seconds into the audio
+          duration:  (s.duration ?? 0) / 1e7,
+          textOffset,                            // char index in chunk text (null if not found)
+        }
+      })
 
     res.json({ audio: audioB64, wordBoundaries })
   } catch (err) {

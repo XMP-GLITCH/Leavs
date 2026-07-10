@@ -101,7 +101,6 @@ export default function CoverPickerScreen() {
   const [aiLoading,  setAiLoading]  = useState(false)
   const [aiError,    setAiError]    = useState(null)
   const [aiSelected, setAiSelected] = useState(null)
-  const [aiSource,   setAiSource]   = useState(null)   // 'gemini' | 'pollinations'
 
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
   const chapters = useLiveQuery(
@@ -118,42 +117,12 @@ export default function CoverPickerScreen() {
     const excerpt = buildExcerpt(chapters)
 
     try {
-      // ── 1. Try Gemini image (uses book text as context when API key present) ──
-      const res  = await fetch('/api/covers/generate', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ title: book.title, author: book.author, genre: book.genre, excerpt }),
-      })
-      const body = await res.json().catch(() => ({}))
-
-      if (res.ok && body.covers?.length) {
-        setAiCovers(body.covers)
-        setSelected('ai-0')
-        setAiSelected(body.covers[0])
-        setAiSource('gemini')
-        return
-      }
-
-      // ── 2. Analyze book content to get 4 scene descriptions ──
-      //    Server may not be running (Vercel static deploy) — always have a fallback.
-      let scenes = []
-      try {
-        const analyzeRes = await fetchWithTimeout(
-          '/api/covers/analyze',
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: book.title, author: book.author, excerpt }) },
-          12_000
-        )
-        const body = await analyzeRes.json().catch(() => ({}))
-        if (Array.isArray(body.scenes) && body.scenes.length) scenes = body.scenes
-      } catch { /* server not available */ }
-
-      // Use content-aware scenes built from actual book text when server unavailable
-      const effectiveScenes = scenes.length > 0 ? scenes : buildContentScenes(book.title, book.author, excerpt)
-
-      // ── 3. Generate images (HF FLUX → Pollinations fallback per image) ──
+      // Build 4 content-aware scene prompts from the actual book text, then
+      // generate images (HF FLUX via serverless → Pollinations fallback per image)
+      const scenes  = buildContentScenes(book.title, book.author, excerpt)
       const seeds   = [42, 137, 512, 999]
       const results = await Promise.allSettled(
-        effectiveScenes.map((scene, i) => generateImage(book.title, scene, seeds[i]))
+        scenes.map((scene, i) => generateImage(book.title, scene, seeds[i]))
       )
       const covers  = results.filter(r => r.status === 'fulfilled').map(r => r.value)
 
@@ -165,7 +134,6 @@ export default function CoverPickerScreen() {
       setAiCovers(covers)
       setSelected('ai-0')
       setAiSelected(covers[0])
-      setAiSource('pollinations')
     } catch (err) {
       setAiError(err.message)
     } finally {
@@ -228,12 +196,7 @@ export default function CoverPickerScreen() {
       {/* AI-generated covers */}
       {aiCovers.length > 0 && (
         <>
-          <div className="cover-grid-label" style={{ marginTop: 20 }}>
-            AI generated
-            {aiSource === 'huggingface' && (
-              <span style={{ fontWeight: 400, opacity: 0.5, marginLeft: 6, textTransform: 'none', letterSpacing: 0 }}>via Hugging Face</span>
-            )}
-          </div>
+          <div className="cover-grid-label" style={{ marginTop: 20 }}>AI generated</div>
           <div className="cover-grid">
             {aiCovers.map((src, i) => (
               <div

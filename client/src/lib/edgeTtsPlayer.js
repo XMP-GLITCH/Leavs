@@ -40,7 +40,7 @@ export class EdgeTtsPlayer {
     this._stop()
     this._text     = text || ''
     this._voice    = voice || 'en-US-JennyNeural'
-    this._chunks   = _splitChunks(this._text)
+    this._chunks   = splitTtsChunks(this._text)
     this._cache    = {}
     this._curChunk = 0
     this._charPos  = 0
@@ -268,6 +268,7 @@ export class EdgeTtsPlayer {
     }
 
     const { audio: b64, wordBoundaries } = await res.json()
+      .catch(() => { throw new Error('Server returned an empty response — try again') })
 
     const bin    = atob(b64)
     const bytes  = new Uint8Array(bin.length)
@@ -280,7 +281,7 @@ export class EdgeTtsPlayer {
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
-function _splitChunks(text) {
+export function splitTtsChunks(text) {
   const chunks = []
   let pos = 0
   while (pos < text.length) {

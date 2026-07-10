@@ -40,7 +40,12 @@ export default async function handler(req, res) {
       })
     }
 
+    // Prefer MP4/AAC — Safari cannot decode WebM/Opus via decodeAudioData.
+    // Fall back to any audio-only stream if no MP4 is available.
     const format = ytdl.chooseFormat(videoInfo.formats, {
+      quality: 'lowestaudio',
+      filter:  f => f.mimeType?.includes('audio/mp4') && !f.hasVideo,
+    }) || ytdl.chooseFormat(videoInfo.formats, {
       quality: 'lowestaudio',
       filter:  'audioonly',
     })

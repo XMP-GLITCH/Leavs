@@ -1,6 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo } from 'react'
 import { db } from '../db/db'
+import { getActivityDays } from '../utils/activity'
 import LeafProgress from '../components/common/LeafProgress'
 
 const DAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
@@ -45,10 +46,13 @@ export default function StatsScreen() {
       d.setDate(d.getDate() - (6 - i))
       return d
     })
-    const labels = days.map(d => DAY_INITIALS[d.getDay()])
+    const labels      = days.map(d => DAY_INITIALS[d.getDay()])
+    const activityLog = getActivityDays()
     const active = days.map(d => {
       const dayStr = d.toDateString()
-      return allBooks.some(b => b.lastOpenedAt && new Date(b.lastOpenedAt).toDateString() === dayStr)
+      // Activity log is the source of truth; lastOpenedAt covers pre-log history
+      return activityLog.has(dayStr)
+        || allBooks.some(b => b.lastOpenedAt && new Date(b.lastOpenedAt).toDateString() === dayStr)
     })
     // Current streak: consecutive active days counting back from today
     let streak = 0

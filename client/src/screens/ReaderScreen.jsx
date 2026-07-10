@@ -5,6 +5,7 @@ import { db } from '../db/db'
 import { AudioPlayer, computeWaveform, findActiveWord, fmtTime } from '../lib/audioPlayer'
 import { EdgeTtsPlayer } from '../lib/edgeTtsPlayer'
 import { useSettings, getSetting } from '../utils/settings'
+import { recordActivityToday } from '../utils/activity'
 
 const STATIC_WAVE = [0.3,0.55,0.7,0.5,0.85,0.4,0.65,0.9,0.45,0.75,0.55,0.8,0.35,0.6,0.95,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.8,0.35,0.65,0.9,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.35,0.65,0.5,0.4,0.3]
 const BARS = 40
@@ -56,7 +57,10 @@ export default function ReaderScreen() {
   const [audioDuration, setAudioDuration] = useState(0)
   const [waveform,      setWaveform]      = useState(STATIC_WAVE)
   const [audioReady,    setAudioReady]    = useState(false)
-  const [speedIdx,      setSpeedIdx]      = useState(2)
+  const [speedIdx,      setSpeedIdx]      = useState(() => {
+    const i = SPEEDS.indexOf(getSetting('playbackSpeed'))
+    return i >= 0 ? i : 1
+  })
   const [activeWordIdx,   setActiveWordIdx]   = useState(-1)
   const [ttsError,        setTtsError]        = useState(null)
   const [chapterAnnounce, setChapterAnnounce] = useState(null)
@@ -75,10 +79,16 @@ export default function ReaderScreen() {
   const touchStartRef     = useRef(null)
   // Stale-closure guards for effects that capture reactive values
   const isListenModeRef   = useRef(false)
+  const usePregenRef      = useRef(false)
   const chapterIndexRef   = useRef(0)
   const chapterCountRef   = useRef(0)
   const chaptersRef       = useRef([])
   const pendingAutoPlayRef = useRef(false)
+  // Audio-position tracking for resume (read from refs so a destroyed <audio>
+  // element can never feed a stale 0 back into saved progress)
+  const audioReadyRef     = useRef(false)
+  const lastAudioPosRef   = useRef(0)
+  const audioDurRef       = useRef(0)
 
   // ── Data ────────────────────────────────────────────────────────────────
   const book     = useLiveQuery(() => db.books.get(bookId), [bookId])
@@ -86,7 +96,7 @@ export default function ReaderScreen() {
   // Keep refs in sync with reactive values (avoid stale closures in event handlers)
 
   const chapter  = useLiveQuery(
-    () => db.chapters.where('bookId').equals(bookId).filter(c => c.index === chapterIndex).first(),
+    () => db.chapters.where('[bookId+index]').equals([bookId, chapterIndex]).first(),
     [bookId, chapterIndex],
   )
   const chapterCount = useLiveQuery(
@@ -119,6 +129,7 @@ export default function ReaderScreen() {
 
   // Sync refs used inside event-listener closures
   useEffect(() => { isListenModeRef.current = book?.mode === 'listen' },  [book?.mode])
+  useEffect(() => { usePregenRef.current = book?.mode === 'listen' && !!audioChunk?.data }, [book?.mode, audioChunk?.id])
   useEffect(() => { chapterIndexRef.current = chapterIndex },              [chapterIndex])
   useEffect(() => { chapterCountRef.current = chapterCount },              [chapterCount])
   useEffect(() => { chaptersRef.current     = chapters ?? [] },            [chapters])
@@ -140,16 +151,45 @@ export default function ReaderScreen() {
   // ── AudioPlayer lifecycle ────────────────────────────────────────────────
   useEffect(() => {
     const player = new AudioPlayer()
+    let lastBoundaryIdx = -1
     player.onTimeUpdate = (t, d) => {
       setCurrentTime(t)
-      if (d > 0) setAudioDuration(d)
-      const idx = findActiveWord(wordBoundariesRef.current, t)
-      if (idx !== -1) setActiveWordIdx(idx)
+      lastAudioPosRef.current = t
+      if (d > 0) { setAudioDuration(d); audioDurRef.current = d }
+      const bs  = wordBoundariesRef.current
+      const idx = findActiveWord(bs, t)
+      if (idx === -1 || idx === lastBoundaryIdx) return
+      lastBoundaryIdx = idx
+      // Prefer exact char-offset mapping; fall back to index alignment for
+      // audio generated before offsets were stored.
+      const off = bs[idx]?.textOffset
+      if (off != null) {
+        for (const para of paraTokensRef.current) {
+          for (const tok of para.tokens) {
+            if (typeof tok === 'object' && tok.charStart <= off && off < tok.charEnd) {
+              setActiveWordIdx(tok.i)
+              return
+            }
+          }
+        }
+      }
+      setActiveWordIdx(idx)
     }
     player.onEnded = () => {
       setIsPlaying(false)
       setCurrentTime(0)
       setActiveWordIdx(-1)
+      // Auto-advance to the next chapter, matching the streaming-TTS behaviour
+      const ci = chapterIndexRef.current
+      const cc = chapterCountRef.current
+      if (isListenModeRef.current && ci + 1 < cc) {
+        const nextCh   = chaptersRef.current?.find(c => c.index === ci + 1)
+        const announce = nextCh?.title || `Chapter ${ci + 2}`
+        setChapterAnnounce(announce)
+        setTimeout(() => setChapterAnnounce(null), 3500)
+        pendingAutoPlayRef.current = true
+        navigate(`/book/${id}/read?chapter=${ci + 1}`)
+      }
     }
     playerRef.current = player
     return () => player.destroy()
@@ -158,25 +198,51 @@ export default function ReaderScreen() {
   useEffect(() => {
     if (!audioChunk?.data || !playerRef.current) return
     setAudioReady(false)
+    audioReadyRef.current = false
+    lastAudioPosRef.current = 0
+    audioDurRef.current = 0
     setIsPlaying(false)
     setCurrentTime(0)
     setActiveWordIdx(-1)
     wordBoundariesRef.current = audioChunk.wordBoundaries ?? []
 
-    playerRef.current.load(audioChunk.data).then(() => {
+    playerRef.current.load(audioChunk.data, audioChunk.mime).then(async () => {
+      const dur = playerRef.current.duration
       setAudioReady(true)
-      setAudioDuration(playerRef.current.duration)
-      setWaveform(computeWaveform(playerRef.current.buffer, BARS))
+      audioReadyRef.current = true
+      setAudioDuration(dur)
+      audioDurRef.current = dur
+      setWaveform(playerRef.current.buffer ? computeWaveform(playerRef.current.buffer, BARS) : STATIC_WAVE)
       playerRef.current.setSpeed(SPEEDS[speedIdx])
+
+      if (pendingAutoPlayRef.current) {
+        // Arrived by auto-advancing chapters — start from the top and play
+        pendingAutoPlayRef.current = false
+        playerRef.current.play().then(() => setIsPlaying(true)).catch(() => {})
+      } else {
+        // Resume from the saved position for this chapter (read straight from
+        // the DB to avoid racing the live query)
+        const prog = await db.progress.get(bookId)
+        const pos  = prog?.chapterId === chapterIndex ? (prog.audioPosition || 0) : 0
+        if (pos > 1 && (!dur || pos < dur - 2)) {
+          playerRef.current.seek(pos)
+          lastAudioPosRef.current = pos
+          setCurrentTime(pos)
+        }
+      }
     }).catch(err => {
-      console.error('[AudioPlayer] decode failed:', err)
-      setTtsError(`Audio failed to decode: ${err.message}`)
+      console.error('[AudioPlayer] load failed:', err)
+      setTtsError(err.message)
     })
   }, [audioChunk?.id, book?.mode])
 
   // ── EdgeTtsPlayer lifecycle (listen mode — only when no pre-gen audio) ──
   useEffect(() => {
-    if (book?.mode !== 'listen' || audioChunk?.data) {
+    // audioStatus 'ready' means a stored chunk exists (the Dexie query may
+    // still be in flight) — don't start streaming TTS that would be torn down
+    // a moment later, and never read imported-audio placeholder text aloud.
+    const expectPregen = !!audioChunk?.data || chapter?.audioStatus === 'ready'
+    if (book?.mode !== 'listen' || expectPregen) {
       // Clean up speech player when switching away from listen or when pre-gen audio is available
       if (speechPlayerRef.current) {
         speechPlayerRef.current.destroy()
@@ -231,14 +297,25 @@ export default function ReaderScreen() {
     speechPlayerRef.current = sp
     setAudioReady(true)
     setAudioDuration(chapter.text.length)
-    setCurrentTime(0)
     setActiveWordIdx(-1)
     setIsPlaying(false)
 
     // Auto-play when advancing chapters (session still active from previous playback)
     if (pendingAutoPlayRef.current) {
       pendingAutoPlayRef.current = false
+      setCurrentTime(0)
       setTimeout(() => { sp.play(); setIsPlaying(true) }, 300)
+    } else {
+      // Resume where the listener left off (streaming TTS position is char-based)
+      db.progress.get(bookId).then(prog => {
+        const pos = prog?.chapterId === chapterIndex ? (prog.charOffset || 0) : 0
+        if (pos > 0 && pos < chapter.text.length - 1) {
+          sp.seek(pos)
+          setCurrentTime(pos)
+        } else {
+          setCurrentTime(0)
+        }
+      })
     }
 
     return () => { sp.destroy(); speechPlayerRef.current = null }
@@ -258,24 +335,41 @@ export default function ReaderScreen() {
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     if (book?.mode !== 'listen') return
+    const usePregen = !!audioChunk?.data
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
-    navigator.mediaSession.setActionHandler('play',          () => { speechPlayerRef.current?.play(); setIsPlaying(true) })
-    navigator.mediaSession.setActionHandler('pause',         () => { speechPlayerRef.current?.pause(); setIsPlaying(false) })
+    navigator.mediaSession.setActionHandler('play', () => {
+      if (usePregen) { setIsPlaying(true); playerRef.current?.play().catch(() => setIsPlaying(false)) }
+      else           { speechPlayerRef.current?.play(); setIsPlaying(true) }
+    })
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (usePregen) { playerRef.current?.pause(); setIsPlaying(false) }
+      else           { speechPlayerRef.current?.pause(); setIsPlaying(false) }
+    })
     navigator.mediaSession.setActionHandler('nexttrack',     () => goToChapter(chapterIndexRef.current + 1))
     navigator.mediaSession.setActionHandler('previoustrack', () => goToChapter(chapterIndexRef.current - 1))
-    navigator.mediaSession.setActionHandler('seekforward',   ({ seekOffset }) => {
-      const sp = speechPlayerRef.current
-      if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(sp._charPos + d) }
+    navigator.mediaSession.setActionHandler('seekforward', ({ seekOffset }) => {
+      if (usePregen) {
+        const ap = playerRef.current
+        if (ap) ap.seek(ap.currentTime + (seekOffset ?? 10))
+      } else {
+        const sp = speechPlayerRef.current
+        if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(sp._charPos + d) }
+      }
     })
-    navigator.mediaSession.setActionHandler('seekbackward',  ({ seekOffset }) => {
-      const sp = speechPlayerRef.current
-      if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(Math.max(0, sp._charPos - d)) }
+    navigator.mediaSession.setActionHandler('seekbackward', ({ seekOffset }) => {
+      if (usePregen) {
+        const ap = playerRef.current
+        if (ap) ap.seek(Math.max(0, ap.currentTime - (seekOffset ?? 10)))
+      } else {
+        const sp = speechPlayerRef.current
+        if (sp) { const d = (seekOffset ?? 10) * 12; sp.seek(Math.max(0, sp._charPos - d)) }
+      }
     })
     return () => {
       ['play','pause','nexttrack','previoustrack','seekforward','seekbackward']
         .forEach(a => { try { navigator.mediaSession.setActionHandler(a, null) } catch {} })
     }
-  }, [isPlaying, book?.mode])
+  }, [isPlaying, book?.mode, audioChunk?.id])
 
   // ── Vocab definition fetch ───────────────────────────────────────────────
   useEffect(() => {
@@ -300,13 +394,31 @@ export default function ReaderScreen() {
       .finally(() => setVocabLoading(false))
   }, [vocabWord])
 
-  // ── Scroll progress ──────────────────────────────────────────────────────
+  // ── Progress persistence (scroll offset + audio position) ─────────────────
   const saveProgress = useCallback(async () => {
     if (!chapter?.text || !chapterCount) return
-    const totalH = document.documentElement.scrollHeight - window.innerHeight
-    const ratio  = totalH > 0 ? Math.min(1, window.scrollY / totalH) : 0
-    const charOffset = Math.round(ratio * chapter.text.length)
-    await db.progress.put({ bookId, chapterId: chapterIndex, charOffset, updatedAt: Date.now() })
+    const totalH      = document.documentElement.scrollHeight - window.innerHeight
+    const scrollRatio = totalH > 0 ? Math.min(1, window.scrollY / totalH) : 0
+    const charOffset  = Math.round(scrollRatio * chapter.text.length)
+
+    // In listen mode the audio position is authoritative for both resume and
+    // the book %; scroll is only meaningful for read mode.
+    const canUseAudio = isListenModeRef.current && usePregenRef.current
+      && audioReadyRef.current && audioDurRef.current > 0
+
+    let audioPosition
+    let ratio = scrollRatio
+    if (canUseAudio) {
+      audioPosition = lastAudioPosRef.current || 0
+      ratio = Math.min(1, audioPosition / audioDurRef.current)
+    } else {
+      // Audio not measurable yet (still loading, or streaming TTS) — never
+      // overwrite a stored audio position with 0, or reopening restarts the book.
+      const existing = await db.progress.get(bookId)
+      audioPosition = existing?.chapterId === chapterIndex ? (existing.audioPosition || 0) : 0
+    }
+
+    await db.progress.put({ bookId, chapterId: chapterIndex, charOffset, audioPosition, updatedAt: Date.now() })
     await db.books.update(bookId, {
       progress:     Math.min(1, (chapterIndex + ratio) / chapterCount),
       lastOpenedAt: Date.now(),
@@ -320,8 +432,23 @@ export default function ReaderScreen() {
     return () => { window.removeEventListener('scroll', onScroll); clearTimeout(timer) }
   }, [saveProgress])
 
+  // Flush progress immediately when the app is backgrounded, hidden, or the
+  // reader unmounts — debounced scroll saves don't fire on the way out, which
+  // is exactly when a paused audiobook would otherwise lose its place.
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') saveProgress() }
+    window.addEventListener('pagehide', saveProgress)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('pagehide', saveProgress)
+      document.removeEventListener('visibilitychange', onHide)
+      saveProgress()
+    }
+  }, [saveProgress])
+
   useEffect(() => {
     db.books.update(bookId, { lastOpenedAt: Date.now() })
+    recordActivityToday()
     const t = setTimeout(saveProgress, 400)
     return () => clearTimeout(t)
   }, [bookId, chapterIndex])
@@ -359,26 +486,27 @@ export default function ReaderScreen() {
     setSleepEnd(Date.now() + mins * 60 * 1000)
   }
 
-  // ── Listen time tracking (every 10s while playing) ────────────────────
+  // ── Listen time tracking + periodic progress save (every 10s while playing) ──
   useEffect(() => {
     if (!isPlaying) return
     const iv = setInterval(async () => {
       const current = await db.books.get(bookId)
       await db.books.update(bookId, { listenedSeconds: (current?.listenedSeconds || 0) + 10 })
+      saveProgress()   // checkpoint audio position so a hard kill keeps the place
     }, 10_000)
     return () => clearInterval(iv)
-  }, [isPlaying, bookId])
+  }, [isPlaying, bookId, saveProgress])
 
-  // ── Read time tracking (every 30s while not playing) ─────────────────────
+  // ── Read time tracking (every 30s while not playing, read mode only) ─────
   useEffect(() => {
-    if (isPlaying || !chapter?.text) return
+    if (isPlaying || !chapter?.text || book?.mode === 'listen') return
     const iv = setInterval(async () => {
       if (document.visibilityState !== 'visible') return
       const cur = await db.books.get(bookId)
       await db.books.update(bookId, { readSeconds: (cur?.readSeconds || 0) + 30 })
     }, 30_000)
     return () => clearInterval(iv)
-  }, [isPlaying, chapter?.id, bookId])
+  }, [isPlaying, chapter?.id, bookId, book?.mode])
 
   // ── Chapter navigation ───────────────────────────────────────────────────
   function goToChapter(idx) {
@@ -394,6 +522,26 @@ export default function ReaderScreen() {
   }
 
   useEffect(() => { customSelRef.current = customSel }, [customSel])
+
+  // Seek audio to a character position — works for both pre-generated audio
+  // (map char → seconds via word boundaries) and streaming TTS (char-based).
+  // Reads only refs, so it is safe to call from stale event-listener closures.
+  function seekToChar(charStart) {
+    if (usePregenRef.current) {
+      const bs = wordBoundariesRef.current
+      if (!bs?.length) return
+      let t = null
+      for (const b of bs) {
+        if (b.textOffset == null) continue
+        if (b.textOffset <= charStart) t = b.start
+        else break
+      }
+      // Older audio was stored without offsets — don't jump to 0:00 on tap
+      if (t != null) playerRef.current?.seek(t)
+    } else {
+      speechPlayerRef.current?.seek(charStart)
+    }
+  }
 
   // ── Custom long-press + drag selection (no native iOS blue highlight) ─────
   useEffect(() => {
@@ -450,7 +598,7 @@ export default function ReaderScreen() {
           if (!tok) continue
           if (isListenModeRef.current) {
             // In listen mode: tap word → seek to that position
-            speechPlayerRef.current?.seek(tok.charStart)
+            seekToChar(tok.charStart)
           } else {
             setVocabWord(tok.tok); setVocabPi(para.pi)
           }
@@ -478,7 +626,7 @@ export default function ReaderScreen() {
       const tok = para.tokens.find(t => typeof t === 'object' && t.i === wi)
       if (!tok) continue
       if (isListenMode && audioReady) {
-        speechPlayerRef.current?.seek(tok.charStart)
+        seekToChar(tok.charStart)
       } else {
         setVocabWord(tok.tok); setVocabPi(para.pi)
       }
@@ -486,8 +634,10 @@ export default function ReaderScreen() {
     }
   }
 
-  function getCustomSelText() {
-    if (!customSel || !chapter?.text) return ''
+  const selRangeRef = useRef(null)  // { start, end } of the pending highlight, if known
+
+  function getCustomSelRange() {
+    if (!customSel || !chapter?.text) return null
     let s = Infinity, e = 0
     for (const para of paragraphTokens) {
       for (const t of para.tokens) {
@@ -496,7 +646,7 @@ export default function ReaderScreen() {
         if (t.charEnd   > e) e = t.charEnd
       }
     }
-    return s < e ? chapter.text.slice(s, e).trim() : ''
+    return s < e ? { text: chapter.text.slice(s, e).trim(), start: s, end: e } : null
   }
 
   async function saveHighlight() {
@@ -505,6 +655,8 @@ export default function ReaderScreen() {
       await db.highlights.add({
         bookId, chapterId: chapterIndex,
         selectedText: text, colour: hlColor,
+        startOffset: selRangeRef.current?.start ?? null,
+        endOffset:   selRangeRef.current?.end   ?? null,
         note: noteText.trim(), createdAt: Date.now(),
       })
     }
@@ -515,6 +667,7 @@ export default function ReaderScreen() {
     setCustomSel(null)
     selAnchorRef.current = null
     customSelRef.current = null
+    selRangeRef.current  = null
   }
 
   // ── Bookmark ─────────────────────────────────────────────────────────────
@@ -549,6 +702,7 @@ export default function ReaderScreen() {
     if (isPlaying) {
       playerRef.current.pause()
       setIsPlaying(false)
+      saveProgress()   // persist place the moment the user pauses
     } else {
       setIsPlaying(true)
       playerRef.current.play().catch(() => setIsPlaying(false))
@@ -637,6 +791,11 @@ export default function ReaderScreen() {
     if (!chapterHighlights?.length || !chapter?.text) return []
     const ranges = []
     for (const h of chapterHighlights) {
+      if (h.startOffset != null && h.endOffset != null) {
+        ranges.push({ start: h.startOffset, end: h.endOffset, colour: h.colour })
+        continue
+      }
+      // Older highlights without stored offsets: best-effort first occurrence
       const idx = chapter.text.indexOf(h.selectedText)
       if (idx >= 0) ranges.push({ start: idx, end: idx + h.selectedText.length, colour: h.colour })
     }
@@ -723,7 +882,7 @@ export default function ReaderScreen() {
           <button className="icon-btn icon-btn--ink" aria-label="Bookmark" onClick={addBookmark}>
             <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
           </button>
-          <button className="icon-btn icon-btn--ink" aria-label="Annotate" onClick={() => { setSelectedText(''); setShowHlPanel(true) }}>
+          <button className="icon-btn icon-btn--ink" aria-label="Annotate" onClick={() => { setSelectedText(''); selRangeRef.current = null; setShowHlPanel(true) }}>
             <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
           </button>
         </div>
@@ -803,6 +962,7 @@ export default function ReaderScreen() {
               <div className="vs vs--hl" onClick={() => {
                 const word = vocabWord
                 setVocabWord(null); setVocabPi(null)
+                selRangeRef.current = null
                 setSelectedText(word)
                 setShowHlPanel(true)
               }}>
@@ -823,9 +983,12 @@ export default function ReaderScreen() {
           }}>Cancel</button>
           <button className="sel-hl-btn" onPointerDown={e => {
             e.preventDefault()
-            const text = getCustomSelText()
+            const range = getCustomSelRange()
             setCustomSel(null); selAnchorRef.current = null; customSelRef.current = null
-            if (text) { setSelectedText(text); setVocabWord(null); setShowHlPanel(true) }
+            if (range) {
+              selRangeRef.current = { start: range.start, end: range.end }
+              setSelectedText(range.text); setVocabWord(null); setShowHlPanel(true)
+            }
           }}>
             <svg viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
             Highlight

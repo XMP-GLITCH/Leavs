@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "dexie": "^3.2.7",
     "dexie-react-hooks": "^1.1.7",
     "edge-tts-universal": "^1.4.0",

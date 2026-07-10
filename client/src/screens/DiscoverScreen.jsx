@@ -396,13 +396,12 @@ export default function DiscoverScreen() {
         book.title.replace(/[^\w\s]/gi, '').trim().slice(0, 50) + ext,
         { type: mime }
       )
-      const result = await ingestFile(file)
+      const result = await ingestFile(file, () => onProgress(-1))
       const bookId = typeof result === 'object' ? result.bookId : result
       if (!bookId) throw new Error('Book was not saved correctly')
 
-      const updates = { mode: 'listen' }
-      if (book.cover) updates.cover = book.cover
-      await db.books.update(bookId, updates)
+      // Respect the user's default-mode preference (applied by ingestFile)
+      if (book.cover) await db.books.update(bookId, { cover: book.cover })
       navigate(`/book/${bookId}`)
     } catch (err) {
       setAddMsg(`Could not add: ${err.message}`)
