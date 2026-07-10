@@ -49,6 +49,15 @@ export default function ProfileScreen() {
 
   const usedPct = Math.min(100, Math.round((storage.used / storage.quota) * 100))
 
+  // Human-readable stamp of the running build (injected at build time)
+  const buildDateLabel = (() => {
+    try {
+      return new Date(__BUILD_TIME__).toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
+    } catch { return __BUILD_TIME__ }
+  })()
+
   function exportVocab() {
     const lines = allVocab.map(v => v.word).join('\n')
     const blob  = new Blob([lines], { type: 'text/plain' })
@@ -239,7 +248,8 @@ export default function ProfileScreen() {
         <div className="pref-section">
           <div className="pref-label">About</div>
           <div className="pref-card">
-            <div className="about-row"><span>Version</span><strong>0.1.0</strong></div>
+            <div className="about-row"><span>Version</span><strong>0.1.0 · {__BUILD_COMMIT__}</strong></div>
+            <div className="about-row"><span>Build date</span><strong>{buildDateLabel}</strong></div>
             <div className="about-row"><span>Built by</span><strong>Neville — Apex Tech</strong></div>
 
             <div className="pref-row"

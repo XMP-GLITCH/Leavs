@@ -1,8 +1,24 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { execSync } from 'node:child_process'
+
+// Stamp each build with a commit hash + build time so the running version is
+// identifiable in-app. On Vercel, git may be unavailable but VERCEL_GIT_COMMIT_SHA is set.
+function gitCommit() {
+  if (process.env.VERCEL_GIT_COMMIT_SHA) return process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)
+  try { return execSync('git rev-parse --short HEAD').toString().trim() }
+  catch { return 'dev' }
+}
+
+const BUILD_COMMIT = gitCommit()
+const BUILD_TIME   = new Date().toISOString()
 
 export default defineConfig({
+  define: {
+    __BUILD_COMMIT__: JSON.stringify(BUILD_COMMIT),
+    __BUILD_TIME__:   JSON.stringify(BUILD_TIME),
+  },
   plugins: [
     react(),
     VitePWA({
