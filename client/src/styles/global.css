@@ -952,22 +952,30 @@ img { display: block; max-width: 100%; height: auto; }
 }
 
 .dropcap {
-  font-family: 'Playfair Display', serif;
+  font-family: var(--reader-font, Georgia, serif);
   font-size: 68px;
   font-weight: 700;
   float: left;
   line-height: 0.82;
   margin-right: 3px;
   margin-top: 8px;
-  color: var(--moss);
+  color: var(--accent);
 }
 
 .rp {
-  font-family: 'Playfair Display', serif;
-  font-size: 16px;
-  line-height: 1.88;
-  color: var(--ink-mid);
-  margin-bottom: 18px;
+  /* Reader font family is a preference — see --reader-font on .rdrbody. */
+  font-family: var(--reader-font, Georgia, 'Times New Roman', serif);
+  /* MUST inherit. This was a hard 16px, which silently overrode the font-size
+     preference set on .rdrbody — the Profile control did nothing at all. */
+  font-size: inherit;
+  line-height: 1.7;
+  color: var(--text-body);
+  margin-bottom: 1.1em;
+  /* 60-75 characters is the readability target; unbounded lines on a tablet
+     run far past that. */
+  max-width: 38em;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Highlight colours */
@@ -2501,4 +2509,31 @@ img { display: block; max-width: 100%; height: auto; }
   background: var(--moss);
   border-radius: 2px;
   transition: width 0.4s ease;
+}
+
+/* ─── Focus visibility ──────────────────────────────────────────── */
+/* There were no focus styles anywhere, so keyboard users had no idea where
+   they were. :focus-visible rather than :focus so tapping never shows a ring. */
+:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+[data-theme="dark"] :focus-visible,
+[data-theme="sepia"] :focus-visible { outline-color: var(--vein); }
+
+/* Text inputs already read as focused; give them the ring on the border. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible { outline-offset: 0; }
+
+/* ─── Reduced motion ────────────────────────────────────────────── */
+/* Colour and opacity still animate; anything that MOVES does not. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-property: color, background-color, border-color, fill, stroke, opacity !important;
+  }
 }

@@ -76,6 +76,23 @@
   --text-body:       #C8C4B8;
   --text-secondary:  #8A8878;
   --text-placeholder:#5A5A48;
+  /* Components reach past the semantic tokens and use raw palette values in
+     roughly 190 places — .rp is literally `color: var(--ink-mid)`. Redefining
+     only --text-* left body text at #3A3A30 on #0F1A0F: a contrast ratio near
+     1.4:1, effectively invisible. Remap the palette itself. */
+  --ink:             #F0EDE4;
+  --ink-mid:         #C8C4B8;
+  --ink-soft:        #8A8878;
+  --ink-ghost:       #5A5A48;
+  --parchment:       #0F1A0F;
+  --parchment-deep:  #1E2A1E;
+  --cream-card:      #162016;
+  --moss:            #5C8A5C;
+
+  /* Moss is too dark to read as an accent against the night background. */
+  --accent:          var(--moss-light);
+  --accent-mid:      var(--moss-mid);
+  --accent-light:    var(--vein);
   --border:          #2A3E2A;
   --border-subtle:   #1E2E1E;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);

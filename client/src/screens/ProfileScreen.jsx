@@ -1,7 +1,9 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, useEffect } from 'react'
 import { db } from '../db/db'
-import { useSettings, setSetting } from '../utils/settings'
+import { useSettings, READER_FONTS } from '../utils/settings'
+import { useCanInstall, promptInstall } from '../utils/install'
+import { THEMES } from '../utils/theme'
 
 // Must match SPEEDS in ReaderScreen
 const SPEED_OPTS  = [0.75, 1.0, 1.2, 1.5, 2.0]
@@ -28,13 +30,15 @@ function PrefRow({ title, subtitle, children }) {
 export default function ProfileScreen() {
   const [s, set] = useSettings(
     'fontSize', 'playbackSpeed', 'defaultMode',
-    'sleepTimerMinutes', 'profileName'
+    'sleepTimerMinutes', 'profileName', 'theme', 'readerFont'
   )
 
   const vocabCount  = useLiveQuery(() => db.vocabulary.count(), []) ?? 0
   const bookCount   = useLiveQuery(() => db.books.count(), [])      ?? 0
   const hlCount     = useLiveQuery(() => db.highlights.count(), []) ?? 0
   const allVocab    = useLiveQuery(() => db.vocabulary.orderBy('createdAt').reverse().toArray(), []) ?? []
+
+  const canInstall = useCanInstall()
 
   const [storage, setStorage]       = useState({ used: 0, quota: 0 })
   const [showAllVocab, setShowAllVocab] = useState(false)
@@ -157,6 +161,17 @@ export default function ProfileScreen() {
               </div>
             </PrefRow>
 
+            <PrefRow title="Reading font" subtitle="What the book itself is set in">
+              <div className="seg-ctrl">
+                {Object.keys(READER_FONTS).map(f => (
+                  <button key={f} className={`seg-btn${s.readerFont === f ? ' seg-btn--on' : ''}`}
+                    onClick={() => set('readerFont', f)}>
+                    {f === 'serif' ? 'Serif' : f === 'sans' ? 'Sans' : 'Classic'}
+                  </button>
+                ))}
+              </div>
+            </PrefRow>
+
             <PrefRow title="Font size" subtitle="Reader text size">
               <div className="seg-ctrl">
                 {FONT_OPTS.map(sz => (
@@ -230,6 +245,17 @@ export default function ProfileScreen() {
           <div className="pref-label">App Settings</div>
           <div className="pref-card">
 
+            <PrefRow title="Theme" subtitle="Follows your device by default">
+              <div className="seg-ctrl">
+                {THEMES.map(t => (
+                  <button key={t} className={`seg-btn${s.theme === t ? ' seg-btn--on' : ''}`}
+                    onClick={() => set('theme', t)}>
+                    {t === 'system' ? 'Auto' : t[0].toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </PrefRow>
+
             <PrefRow title="Sleep timer default" subtitle="Auto-stop after">
               <div className="seg-ctrl">
                 {SLEEP_OPTS.map(m => (
@@ -280,8 +306,8 @@ export default function ProfileScreen() {
               </div>
             </div>
 
-            {typeof window.__leavsInstall === 'function' && (
-              <div className="pref-row" style={{ cursor: 'pointer' }} onClick={() => window.__leavsInstall?.()}>
+            {canInstall && (
+              <div className="pref-row" style={{ cursor: 'pointer' }} onClick={promptInstall}>
                 <div className="pref-ico pico-moss">
                   <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
                 </div>

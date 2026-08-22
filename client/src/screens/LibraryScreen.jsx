@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useRef, useState } from 'react'
+import { useRef, useState, useId } from 'react'
 import { db } from '../db/db'
 import { ingestFile } from '../lib/ingest'
 import LeafProgress from '../components/common/LeafProgress'
@@ -28,8 +28,14 @@ function bookGradient(title = '') {
   return GRADIENTS[Math.abs(hash) % GRADIENTS.length]
 }
 
+// role="button" + tabIndex only gets you focus. Without a key handler the card
+// is reachable by keyboard and impossible to activate.
+const activate = fn => e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn() }
+}
+
 function ShelfLeaf({ progress = 0 }) {
-  const id = Math.random().toString(36).slice(2)
+  const id = useId().replace(/:/g, '')
   const fillH = progress * 18
   return (
     <svg className="bleaf-corner" viewBox="0 0 16 20" fill="none">
@@ -47,7 +53,7 @@ function ShelfLeaf({ progress = 0 }) {
 
 function RecentCard({ book, onClick }) {
   return (
-    <div className="bcard" onClick={onClick} role="button" tabIndex={0}>
+    <div className="bcard" onClick={onClick} onKeyDown={activate(onClick)} role="button" tabIndex={0}>
       <div className="bcover" style={{ background: book.cover ? undefined : book.coverStyle || bookGradient(book.title) }}>
         {book.cover
           ? <img src={book.cover} alt="" />
@@ -63,7 +69,7 @@ function RecentCard({ book, onClick }) {
 
 function GridCard({ book, onClick }) {
   return (
-    <div className="lgcard" onClick={onClick} role="button" tabIndex={0}>
+    <div className="lgcard" onClick={onClick} onKeyDown={activate(onClick)} role="button" tabIndex={0}>
       <div className="lgcover" style={{ background: book.cover ? undefined : book.coverStyle || bookGradient(book.title) }}>
         {book.cover
           ? <img src={book.cover} alt="" />
@@ -489,7 +495,7 @@ export default function LibraryScreen() {
         <>
           <div className="section-label" style={{ marginTop: 18 }}>
             <h3>Library</h3>
-            <a href="#">{gridBooks.length} book{gridBooks.length !== 1 ? 's' : ''}</a>
+            <span>{gridBooks.length} book{gridBooks.length !== 1 ? "s" : ""}</span>
           </div>
           <div className="lib-grid">
             {gridBooks.map(book => (

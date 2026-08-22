@@ -6,6 +6,10 @@ import LeafProgress from '../components/common/LeafProgress'
 
 const DAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
+// Stable identity for the live query while it is pending. '?? []' minted a
+// fresh array on every render, invalidating all four useMemos below each time.
+const NO_BOOKS = []
+
 function StreakDay({ label, done, isToday }) {
   const cls = isToday ? 'sdot2 sdot2--today' : done ? 'sdot2 sdot2--done' : 'sdot2'
   return (
@@ -29,8 +33,7 @@ function StreakDay({ label, done, isToday }) {
 
 export default function StatsScreen() {
   const hlCount    = useLiveQuery(() => db.highlights.count(), []) ?? 0
-  const vocabCount = useLiveQuery(() => db.vocabulary.count(), []) ?? 0
-  const allBooks   = useLiveQuery(() => db.books.toArray(), [])    ?? []
+  const allBooks   = useLiveQuery(() => db.books.toArray(), []) ?? NO_BOOKS
 
   const bkCount       = allBooks.length
   const finishedBooks = useMemo(

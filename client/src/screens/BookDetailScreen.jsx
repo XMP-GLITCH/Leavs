@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useId, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
@@ -16,7 +16,7 @@ const VOICES = [
 ]
 
 function ChapterLeaf({ progress = 0, size = 16 }) {
-  const uid = Math.random().toString(36).slice(2)
+  const uid = useId().replace(/:/g, '')
   const h   = size * 1.25
   const fillH = progress * (h * 0.9)
   return (
@@ -66,16 +66,21 @@ export default function BookDetailScreen() {
 
   const [genState, setGenState] = useState(null) // { current, total, sub } | null
   const [genError, setGenError] = useState(null)
+  // Generation is a serial run over every chapter — a long book could take
+  // hours with no way out but closing the tab.
+  const cancelGenRef = useRef(false)
 
   async function generateAllAudio() {
     const chs = await db.chapters.where('bookId').equals(bookId).sortBy('index')
     setGenError(null)
+    cancelGenRef.current = false
     setGenState({ current: 0, total: chs.length, sub: 0 })
     // Used only to measure each chunk's real duration so merged word
     // boundaries stay aligned — playback itself never uses Web Audio.
     const measureCtx = new AudioContext()
     try {
       for (let i = 0; i < chs.length; i++) {
+        if (cancelGenRef.current) break
         const ch = chs[i]
         setGenState({ current: i + 1, total: chs.length, sub: 0 })
         // Imported audio (e.g. YouTube) must not be overwritten with TTS of its placeholder text
@@ -88,6 +93,7 @@ export default function BookDetailScreen() {
           let timeOffset   = 0
 
           for (let c = 0; c < chunks.length; c++) {
+            if (cancelGenRef.current) throw new Error('Cancelled')
             const { text, charStart } = chunks[c]
 
             // Retry transient failures (server restart, cold start, network blip)
@@ -151,6 +157,7 @@ export default function BookDetailScreen() {
           await db.chapters.update(ch.id, { audioStatus: 'ready' })
         } catch (e) {
           await db.chapters.update(ch.id, { audioStatus: 'none' })
+          if (cancelGenRef.current) break     // deliberate stop, not a failure
           setGenError(`Chapter ${i + 1} failed: ${e.message}`)
         }
       }
@@ -324,18 +331,31 @@ export default function BookDetailScreen() {
             {genError && (
               <div style={{ fontSize: 11, color: '#C0392B', width: '100%' }}>{genError}</div>
             )}
-            <button
-              className="gen-cta-btn"
-              style={{ width: '100%', textAlign: 'center', opacity: genState ? 0.6 : 1 }}
-              disabled={genState != null}
-              onClick={generateAllAudio}
-            >
-              {genState
-                ? `Generating ${genState.current}/${genState.total}…`
-                : audioReadyCount > 0
-                ? `Regenerate (${audioReadyCount}/${chapters.length} ready)`
-                : `Generate audio · ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''}`}
-            </button>
+            {genState ? (
+              <button
+                className="gen-cta-btn"
+                style={{ width: '100%', textAlign: 'center', opacity: genState.cancelling ? 0.6 : 1 }}
+                disabled={genState.cancelling}
+                onClick={() => {
+                  cancelGenRef.current = true
+                  setGenState(g => g && { ...g, cancelling: true })
+                }}
+              >
+                {genState.cancelling
+                  ? 'Stopping…'
+                  : `Stop · ${genState.current}/${genState.total}`}
+              </button>
+            ) : (
+              <button
+                className="gen-cta-btn"
+                style={{ width: '100%', textAlign: 'center' }}
+                onClick={generateAllAudio}
+              >
+                {audioReadyCount > 0
+                  ? `Regenerate (${audioReadyCount}/${chapters.length} ready)`
+                  : `Generate audio · ${chapters.length} chapter${chapters.length !== 1 ? 's' : ''}`}
+              </button>
+            )}
           </div>
         )}
 
