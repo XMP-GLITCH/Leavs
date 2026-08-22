@@ -34,6 +34,11 @@ function collectHandlers(dir) {
   const out = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('_')) continue  // _lib helpers, not routes
+    // Tests are not routes. Importing one here executes describe() outside a
+    // test runner and takes the whole dev server down with it — and on Vercel
+    // any .js under api/ is deployed as a PUBLIC endpoint. Keep tests out of
+    // this directory; this is the backstop.
+    if (/\.(test|spec)\.js$/.test(entry.name)) continue
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) out.push(...collectHandlers(full))
     else if (entry.name.endsWith('.js')) out.push(full)
