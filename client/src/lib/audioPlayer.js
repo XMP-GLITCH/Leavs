@@ -7,6 +7,12 @@
 // the screen off, works with lock-screen Media Session controls, and decodes
 // incrementally. Web Audio is used only to decode SMALL files for the
 // waveform visualisation.
+//
+// Because playback survives a locked screen, position tracking has to as well
+// — and requestAnimationFrame does not: it stops the moment the document is
+// hidden. So this class runs two clocks. The native `timeupdate` event (~4Hz,
+// fires while hidden) is the source of truth; rAF drives only the per-frame
+// karaoke highlight, which nobody can see with the screen off anyway.
 
 const WAVEFORM_DECODE_LIMIT = 6_000_000  // bytes — skip waveform decode above this
 
@@ -19,21 +25,46 @@ export class AudioPlayer {
     this.isPlaying     = false
     this._url          = null
     this._rafId        = null
+    // Last known position. Kept fresh by the native `timeupdate` event, which
+    // — unlike requestAnimationFrame — KEEPS FIRING WHILE THE DOCUMENT IS
+    // HIDDEN. Anything that must stay true with the screen off (saved
+    // progress, the sleep timer, listened-time accounting) reads this, never
+    // the rAF loop.
+    this.lastTime        = 0
+    this._storedDuration = null
 
+    // Two clocks, deliberately:
+    //   onPosition   ~4Hz, fires while hidden — correctness
+    //   onTimeUpdate per frame, visible only  — karaoke highlight
+    this.onPosition   = null    // (currentTime, duration) => void
     this.onTimeUpdate = null    // (currentTime, duration) => void
     this.onEnded      = null    // () => void
 
+    this.audio.addEventListener('timeupdate', () => {
+      this.lastTime = this.audio.currentTime || 0
+      this.onPosition?.(this.lastTime, this.duration)
+    })
+
     this.audio.onended = () => {
       this.isPlaying = false
+      this.lastTime  = this.duration
       this._stopRaf()
       this.onEnded?.()
     }
   }
 
-  async load(arrayBuffer, mime = 'audio/mpeg') {
+  /**
+   * @param storedDuration duration measured when the audio was generated.
+   *   Generated chapters are a concatenation of MP3 chunks and carry no valid
+   *   duration header, so the element's own guess can be badly wrong.
+   */
+  async load(arrayBuffer, mime = 'audio/mpeg', storedDuration = null) {
     this._stopRaf()
     this.audio.pause()
     this.isPlaying = false
+    this.lastTime  = 0
+    this._storedDuration =
+      Number.isFinite(storedDuration) && storedDuration > 0 ? storedDuration : null
     if (this._url) { URL.revokeObjectURL(this._url); this._url = null }
 
     this._url = URL.createObjectURL(new Blob([arrayBuffer], { type: mime || 'audio/mpeg' }))
@@ -67,6 +98,8 @@ export class AudioPlayer {
   get currentTime() { return this.audio.currentTime || 0 }
 
   get duration() {
+    // Prefer the duration measured at generation time. See load().
+    if (this._storedDuration) return this._storedDuration
     const d = this.audio.duration
     return isFinite(d) ? d : 0
   }
@@ -83,6 +116,7 @@ export class AudioPlayer {
     if (!this.isPlaying) return
     this.audio.pause()
     this.isPlaying = false
+    this.lastTime  = this.audio.currentTime || 0
     this._stopRaf()
     this.onTimeUpdate?.(this.currentTime, this.duration)
   }
@@ -91,6 +125,7 @@ export class AudioPlayer {
     if (!this.audio.src) return
     const max = this.duration || seconds
     this.audio.currentTime = Math.max(0, Math.min(seconds, max))
+    this.lastTime = this.audio.currentTime || 0
     if (!this.isPlaying) this.onTimeUpdate?.(this.currentTime, this.duration)
   }
 
@@ -112,6 +147,11 @@ export class AudioPlayer {
   }
 
   destroy() {
+    // Stamp the final position BEFORE tearing the element down. React cleans
+    // effects up in the order they were defined, so the reader's progress
+    // flush runs after this one — reading currentTime off a dead element then
+    // would save a 0 and restart the book on next open.
+    this.lastTime = this.audio.currentTime || this.lastTime
     this._stopRaf()
     this.audio.pause()
     this.audio.removeAttribute('src')

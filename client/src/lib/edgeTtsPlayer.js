@@ -38,10 +38,10 @@ export class EdgeTtsPlayer {
 
   load(text, voice = null) {
     this._stop()
+    this._releaseAll()
     this._text     = text || ''
     this._voice    = voice || 'en-US-JennyNeural'
     this._chunks   = splitTtsChunks(this._text)
-    this._cache    = {}
     this._curChunk = 0
     this._charPos  = 0
     this.isPlaying = false
@@ -104,7 +104,7 @@ export class EdgeTtsPlayer {
     const pos = this._charPos
     if (was) this.pause()
     this._voice    = voice
-    this._cache    = {}
+    this._releaseAll()
     this._curChunk = this._chunkAt(pos)
     this._charPos  = pos
     if (was) this.play()
@@ -112,9 +112,31 @@ export class EdgeTtsPlayer {
 
   destroy() {
     this._stop()
+    this._releaseAll()
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
+
+  // Drop a chunk from the cache AND revoke its blob URL, together.
+  //
+  // These two must never be separated. Revoking on its own used to leave the
+  // resolved promise in the cache, so seeking back over a finished chunk
+  // replayed a dead URL: onerror fired, playback skipped FORWARD instead of
+  // back, and three of those in a row killed the session. Dropping the entry
+  // costs one refetch on a backward seek, which is the correct trade.
+  _release(ci) {
+    const entry = this._cache[ci]
+    if (!entry) return
+    delete this._cache[ci]
+    Promise.resolve(entry)
+      .then(r => { if (r?.blobUrl) URL.revokeObjectURL(r.blobUrl) })
+      .catch(() => {})
+  }
+
+  _releaseAll() {
+    for (const ci of Object.keys(this._cache)) this._release(ci)
+    this._cache = {}
+  }
 
   _chunkAt(charPos) {
     let ci = 0
@@ -174,7 +196,7 @@ export class EdgeTtsPlayer {
     this._curChunk     = ci
 
     audio.onended = () => {
-      URL.revokeObjectURL(blobUrl)
+      this._release(ci)
       this._audio = null
       this._stopRaf()
       if (!this.isPlaying) return
@@ -184,7 +206,7 @@ export class EdgeTtsPlayer {
     }
 
     audio.onerror = () => {
-      URL.revokeObjectURL(blobUrl)
+      this._release(ci)
       this._audio = null
       this._stopRaf()
       this._errCount++
