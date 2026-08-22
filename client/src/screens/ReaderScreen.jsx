@@ -1,11 +1,12 @@
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useState, useRef, useMemo, useEffect, useCallback } from 'react'
+import { useState, useRef, useMemo, useEffect, useCallback, memo } from 'react'
 import { db } from '../db/db'
 import { AudioPlayer, computeWaveform, findActiveWord, fmtTime } from '../lib/audioPlayer'
 import { EdgeTtsPlayer } from '../lib/edgeTtsPlayer'
-import { useSettings, getSetting } from '../utils/settings'
+import { useSettings, getSetting, READER_FONTS } from '../utils/settings'
 import { recordActivityToday } from '../utils/activity'
+import { setPlaying } from '../utils/playback'
 
 const STATIC_WAVE = [0.3,0.55,0.7,0.5,0.85,0.4,0.65,0.9,0.45,0.75,0.55,0.8,0.35,0.6,0.95,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.8,0.35,0.65,0.9,0.5,0.7,0.4,0.85,0.6,0.45,0.75,0.55,0.35,0.65,0.5,0.4,0.3]
 const BARS = 40
@@ -26,6 +27,38 @@ const READER_NAV = [
   { id: 'focus',    label: 'Focus',    icon: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M3 12h1M20 12h1M12 3v1M12 20v1M5.64 5.64l.7.7M17.66 17.66l.7.7M5.64 18.36l.7-.7M17.66 6.34l.7-.7" /></svg> },
 ]
 
+// The chapter text, isolated behind memo().
+//
+// This is the hot path: one <span> per word, so a long chapter is several
+// thousand nodes. It must not re-render when the playback clock ticks — only
+// when the words, the highlights, the spoken word or the selection change.
+// Selection bounds come in as two numbers rather than the customSel object so
+// a fresh object each render can't defeat the memo.
+const ReaderBody = memo(function ReaderBody({ paragraphs, hlByWord, activeWordIdx, selMin, selMax }) {
+  if (!paragraphs.length) {
+    return <p className="rp" style={{ color: 'var(--text-secondary)' }}>No text content yet.</p>
+  }
+  return paragraphs.map(({ pi, dropChar, tokens }) => (
+    <p key={pi} className="rp">
+      {dropChar && <span className="dropcap">{dropChar}</span>}
+      {tokens.map((t, ti) => {
+        if (typeof t === 'string') return t
+        const hlCls = hlByWord.get(t.i)
+        const inSel = t.i >= selMin && t.i <= selMax
+        return (
+          <span
+            key={ti}
+            data-wi={t.i}
+            className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}${inSel ? ' custom-sel' : ''}`}
+          >
+            {t.tok}
+          </span>
+        )
+      })}
+    </p>
+  ))
+})
+
 export default function ReaderScreen() {
   const { id }      = useParams()
   const [sp]        = useSearchParams()
@@ -37,7 +70,6 @@ export default function ReaderScreen() {
   const [activeNav,      setActiveNav]      = useState('annotate')
   const [showNotesPanel, setShowNotesPanel] = useState(false)
   const [vocabWord,      setVocabWord]      = useState(null)
-  const [vocabPi,        setVocabPi]        = useState(null)
   const [vocabDef,       setVocabDef]       = useState(null)
   const [vocabLoading,   setVocabLoading]   = useState(false)
   const [showHlPanel,    setShowHlPanel]    = useState(false)
@@ -47,7 +79,7 @@ export default function ReaderScreen() {
   const [hlColor,        setHlColor]        = useState('hl-y')
 
   // ── Settings ────────────────────────────────────────────────────────────
-  const [prefs] = useSettings('fontSize', 'playbackSpeed')
+  const [prefs] = useSettings('fontSize', 'playbackSpeed', 'readerFont')
   const [sleepEnd,       setSleepEnd]       = useState(null)
   const [sleepRemaining, setSleepRemaining] = useState(0)
 
@@ -129,6 +161,7 @@ export default function ReaderScreen() {
 
   // Sync refs used inside event-listener closures
   useEffect(() => { isListenModeRef.current = book?.mode === 'listen' },  [book?.mode])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on audioChunk.id; Dexie delivers the row whole, so id implies data
   useEffect(() => { usePregenRef.current = book?.mode === 'listen' && !!audioChunk?.data }, [book?.mode, audioChunk?.id])
   useEffect(() => { chapterIndexRef.current = chapterIndex },              [chapterIndex])
   useEffect(() => { chapterCountRef.current = chapterCount },              [chapterCount])
@@ -152,10 +185,19 @@ export default function ReaderScreen() {
   useEffect(() => {
     const player = new AudioPlayer()
     let lastBoundaryIdx = -1
-    player.onTimeUpdate = (t, d) => {
-      setCurrentTime(t)
+
+    // ~4Hz, and keeps firing with the screen off. This is the clock and the
+    // value saved progress depends on.
+    player.onPosition = (t, d) => {
       lastAudioPosRef.current = t
+      setCurrentTime(t)
       if (d > 0) { setAudioDuration(d); audioDurRef.current = d }
+    }
+
+    // Per frame, and only while visible: the karaoke highlight, nothing else.
+    // Setting currentTime here re-rendered every word span in the chapter
+    // sixty times a second — see ReaderBody below.
+    player.onTimeUpdate = (t) => {
       const bs  = wordBoundariesRef.current
       const idx = findActiveWord(bs, t)
       if (idx === -1 || idx === lastBoundaryIdx) return
@@ -193,6 +235,7 @@ export default function ReaderScreen() {
     }
     playerRef.current = player
     return () => player.destroy()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- one player for the screen's lifetime; id and navigate are route-stable
   }, [])
 
   useEffect(() => {
@@ -206,7 +249,7 @@ export default function ReaderScreen() {
     setActiveWordIdx(-1)
     wordBoundariesRef.current = audioChunk.wordBoundaries ?? []
 
-    playerRef.current.load(audioChunk.data, audioChunk.mime).then(async () => {
+    playerRef.current.load(audioChunk.data, audioChunk.mime, audioChunk.duration).then(async () => {
       const dur = playerRef.current.duration
       setAudioReady(true)
       audioReadyRef.current = true
@@ -234,6 +277,7 @@ export default function ReaderScreen() {
       console.error('[AudioPlayer] load failed:', err)
       setTtsError(err.message)
     })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- reload audio only when the stored chunk or the mode changes
   }, [audioChunk?.id, book?.mode])
 
   // ── EdgeTtsPlayer lifecycle (listen mode — only when no pre-gen audio) ──
@@ -319,6 +363,7 @@ export default function ReaderScreen() {
     }
 
     return () => { sp.destroy(); speechPlayerRef.current = null }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuild the TTS player only on chapter/mode/voice change
   }, [chapter?.id, book?.mode, book?.voice, audioChunk?.id])
 
   // ── Media Session API (lock-screen / earphone controls) ─────────────────
@@ -330,6 +375,7 @@ export default function ReaderScreen() {
       artist: book.author  || 'Leavs',
       album:  book.title   || '',
     })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- metadata follows the chapter, not every book field
   }, [chapter?.id, book?.mode])
 
   useEffect(() => {
@@ -369,6 +415,7 @@ export default function ReaderScreen() {
       ['play','pause','nexttrack','previoustrack','seekforward','seekbackward']
         .forEach(a => { try { navigator.mediaSession.setActionHandler(a, null) } catch {} })
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- goToChapter is rebuilt each render; including it would re-register handlers nonstop
   }, [isPlaying, book?.mode, audioChunk?.id])
 
   // ── Vocab definition fetch ───────────────────────────────────────────────
@@ -409,7 +456,13 @@ export default function ReaderScreen() {
     let audioPosition
     let ratio = scrollRatio
     if (canUseAudio) {
-      audioPosition = lastAudioPosRef.current || 0
+      // Read the element itself: it stays accurate while the document is
+      // hidden, when the rAF loop has stopped. `lastTime` covers the unmount
+      // path, where the player has already been destroyed by the time this
+      // effect's cleanup runs.
+      const p    = playerRef.current
+      const live = p ? (p.currentTime || p.lastTime || 0) : 0
+      audioPosition = live > 0 ? live : (lastAudioPosRef.current || 0)
       ratio = Math.min(1, audioPosition / audioDurRef.current)
     } else {
       // Audio not measurable yet (still loading, or streaming TTS) — never
@@ -451,6 +504,7 @@ export default function ReaderScreen() {
     recordActivityToday()
     const t = setTimeout(saveProgress, 400)
     return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- book/chapter change only, not every saveProgress identity
   }, [bookId, chapterIndex])
 
   useEffect(() => {
@@ -467,17 +521,33 @@ export default function ReaderScreen() {
   // ── Sleep timer ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!sleepEnd) return
-    const iv = setInterval(() => {
+
+    const stop = () => {
+      speechPlayerRef.current?.pause()
+      playerRef.current?.pause()
+      setIsPlaying(false)
+      setSleepEnd(null)
+    }
+    const check = () => {
       const rem = Math.max(0, Math.ceil((sleepEnd - Date.now()) / 1000))
       setSleepRemaining(rem)
-      if (rem <= 0) {
-        speechPlayerRef.current?.pause()
-        playerRef.current?.pause()
-        setIsPlaying(false)
-        setSleepEnd(null)
-      }
-    }, 1000)
-    return () => clearInterval(iv)
+      if (rem <= 0) stop()
+    }
+
+    check()
+    // Three ways to fire, because a sleep timer matters precisely when the app
+    // is backgrounded and 1s intervals get throttled or frozen there: the
+    // interval drives the visible countdown, one long timeout is far likelier
+    // to survive backgrounding, and visibilitychange catches the case where
+    // neither fired before the user came back.
+    const iv = setInterval(check, 1000)
+    const to = setTimeout(stop, Math.max(0, sleepEnd - Date.now()))
+    document.addEventListener('visibilitychange', check)
+    return () => {
+      clearInterval(iv)
+      clearTimeout(to)
+      document.removeEventListener('visibilitychange', check)
+    }
   }, [sleepEnd])
 
   function handleSleepTimer() {
@@ -489,24 +559,71 @@ export default function ReaderScreen() {
   // ── Listen time tracking + periodic progress save (every 10s while playing) ──
   useEffect(() => {
     if (!isPlaying) return
-    const iv = setInterval(async () => {
+    // Accumulate WALL-CLOCK time rather than counting interval ticks. Intervals
+    // are throttled or frozen while the app is backgrounded — exactly when
+    // someone is listening with the screen off — so counting ticks undercounts
+    // the sessions that matter most. Flushing on the way out means a session
+    // still lands even if the interval never fired at all.
+    let since = Date.now()
+    const flush = async () => {
+      const secs = Math.round((Date.now() - since) / 1000)
+      since = Date.now()
+      if (secs <= 0) return
       const current = await db.books.get(bookId)
-      await db.books.update(bookId, { listenedSeconds: (current?.listenedSeconds || 0) + 10 })
+      await db.books.update(bookId, { listenedSeconds: (current?.listenedSeconds || 0) + secs })
+    }
+
+    const iv = setInterval(() => {
+      flush()
       saveProgress()   // checkpoint audio position so a hard kill keeps the place
     }, 10_000)
-    return () => clearInterval(iv)
+    document.addEventListener('visibilitychange', flush)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      clearInterval(iv)
+      document.removeEventListener('visibilitychange', flush)
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
   }, [isPlaying, bookId, saveProgress])
 
   // ── Read time tracking (every 30s while not playing, read mode only) ─────
   useEffect(() => {
     if (isPlaying || !chapter?.text || book?.mode === 'listen') return
-    const iv = setInterval(async () => {
-      if (document.visibilityState !== 'visible') return
+    // Count only wall-clock time the page was actually visible. Counting ticks
+    // both undercounted (frozen intervals) and overcounted (a tick that fired
+    // credited a full 30s even if the reader looked away for 29 of them).
+    let since = document.visibilityState === 'visible' ? Date.now() : null
+    const flush = async () => {
+      if (since == null) return
+      const secs = Math.round((Date.now() - since) / 1000)
+      since = document.visibilityState === 'visible' ? Date.now() : null
+      if (secs <= 0) return
       const cur = await db.books.get(bookId)
-      await db.books.update(bookId, { readSeconds: (cur?.readSeconds || 0) + 30 })
-    }, 30_000)
-    return () => clearInterval(iv)
+      await db.books.update(bookId, { readSeconds: (cur?.readSeconds || 0) + secs })
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible') { if (since == null) since = Date.now() }
+      else flush()
+    }
+
+    const iv = setInterval(flush, 30_000)
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      clearInterval(iv)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on chapter.id, which implies chapter.text
   }, [isPlaying, chapter?.id, bookId, book?.mode])
+
+  // Let the service worker know not to swap itself in under a listener.
+  useEffect(() => {
+    setPlaying(isPlaying)
+    return () => setPlaying(false)
+  }, [isPlaying])
 
   // ── Chapter navigation ───────────────────────────────────────────────────
   function goToChapter(idx) {
@@ -600,7 +717,7 @@ export default function ReaderScreen() {
             // In listen mode: tap word → seek to that position
             seekToChar(tok.charStart)
           } else {
-            setVocabWord(tok.tok); setVocabPi(para.pi)
+            setVocabWord(tok.tok)
           }
           break
         }
@@ -628,7 +745,7 @@ export default function ReaderScreen() {
       if (isListenMode && audioReady) {
         seekToChar(tok.charStart)
       } else {
-        setVocabWord(tok.tok); setVocabPi(para.pi)
+        setVocabWord(tok.tok)
       }
       break
     }
@@ -802,18 +919,29 @@ export default function ReaderScreen() {
     return ranges
   }, [chapterHighlights, chapter?.text])
 
-  function getHlClass(charStart, charEnd) {
-    for (const r of hlRanges) {
-      if (charStart < r.end && charEnd > r.start) return r.colour
+  // Resolve each word's highlight colour once per chapter. This used to be a
+  // function called for every token on every render, scanning every range.
+  const hlByWord = useMemo(() => {
+    const map = new Map()
+    if (!hlRanges.length) return map
+    for (const para of paragraphTokens) {
+      for (const t of para.tokens) {
+        if (typeof t !== 'object') continue
+        for (const r of hlRanges) {
+          if (t.charStart < r.end && t.charEnd > r.start) { map.set(t.i, r.colour); break }
+        }
+      }
     }
-    return null
-  }
+    return map
+  }, [paragraphTokens, hlRanges])
 
   // ── Karaoke scroll ───────────────────────────────────────────────────────
   useEffect(() => {
     if (activeWordIdx < 0) return
     const el = document.querySelector(`[data-wi="${activeWordIdx}"]`)
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Smooth scrolling is movement, so it follows the motion preference too.
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    el?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' })
   }, [activeWordIdx])
 
   const cursorBar = audioDuration > 0
@@ -889,29 +1017,21 @@ export default function ReaderScreen() {
       </header>
 
       {/* ── Reader body ── */}
-      <div className="rdrbody" style={{ fontSize: prefs.fontSize }} onMouseUp={handleMouseUp}>
-        {paragraphTokens.length > 0
-          ? paragraphTokens.map(({ pi, dropChar, tokens }) => (
-              <p key={pi} className="rp">
-                {dropChar && <span className="dropcap">{dropChar}</span>}
-                {tokens.map((t, ti) => {
-                  if (typeof t === 'string') return t
-                  const hlCls  = getHlClass(t.charStart, t.charEnd)
-                  const inSel  = customSel && t.i >= customSel.minWi && t.i <= customSel.maxWi
-                  return (
-                    <span
-                      key={ti}
-                      data-wi={t.i}
-                      className={`word${t.i === activeWordIdx ? ' kara' : ''}${hlCls ? ' ' + hlCls : ''}${inSel ? ' custom-sel' : ''}`}
-                    >
-                      {t.tok}
-                    </span>
-                  )
-                })}
-              </p>
-            ))
-          : <p className="rp" style={{ color: 'var(--text-secondary)' }}>No text content yet.</p>
-        }
+      <div
+        className="rdrbody"
+        style={{
+          fontSize: prefs.fontSize,
+          '--reader-font': READER_FONTS[prefs.readerFont] || READER_FONTS.serif,
+        }}
+        onMouseUp={handleMouseUp}
+      >
+        <ReaderBody
+          paragraphs={paragraphTokens}
+          hlByWord={hlByWord}
+          activeWordIdx={activeWordIdx}
+          selMin={customSel ? customSel.minWi : -1}
+          selMax={customSel ? customSel.maxWi : -1}
+        />
 
         {hasNext && (
           <div className="ch-end-card" onClick={() => goToChapter(chapterIndex + 1)}>
@@ -931,11 +1051,11 @@ export default function ReaderScreen() {
       {/* ── Vocab popup ── */}
       {vocabWord && !showHlPanel && (
         <>
-          <div style={{ position: 'fixed', inset: 0, zIndex: 24 }} onClick={() => { setVocabWord(null); setVocabPi(null) }} />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 24 }} onClick={() => { setVocabWord(null) }} />
           <div className="vocab-pop">
             <div className="vocab-hdr">
               <div className="vw">{vocabWord}</div>
-              <button className="vocab-close-btn" onClick={() => { setVocabWord(null); setVocabPi(null) }} aria-label="Close">
+              <button className="vocab-close-btn" onClick={() => { setVocabWord(null) }} aria-label="Close">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
@@ -961,7 +1081,7 @@ export default function ReaderScreen() {
               </div>
               <div className="vs vs--hl" onClick={() => {
                 const word = vocabWord
-                setVocabWord(null); setVocabPi(null)
+                setVocabWord(null)
                 selRangeRef.current = null
                 setSelectedText(word)
                 setShowHlPanel(true)
