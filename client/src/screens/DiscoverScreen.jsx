@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ingestFile } from '../lib/ingest'
 import { db } from '../db/db'
+import { sniffFileType } from '../utils/filetype'
 
 // ── Sources (PDF Drive + OceanPDF removed — their downloads require
 //   JS rendering which can't run in a serverless function) ────────────
@@ -117,6 +118,8 @@ async function searchLibGen(query) {
   const res = await fetch(`/api/libgen/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
   const data = await res.json()
+  // A parser failure is not an empty shelf — surface it as an error.
+  if (data.degraded) throw new Error(data.degraded)
   return (data.books || []).map(b => ({ ...b, source: 'libgen', description: null }))
 }
 
@@ -124,6 +127,8 @@ async function searchAnna(query) {
   const res = await fetch(`/api/anna/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`) }
   const data = await res.json()
+  // A parser failure is not an empty shelf — surface it as an error.
+  if (data.degraded) throw new Error(data.degraded)
   return (data.books || []).map(b => ({ ...b, source: 'anna', description: null }))
 }
 
@@ -259,7 +264,7 @@ function BookDetailSheet({ book, onClose, onAdd, progress }) {
       })
       .catch(() => {})
       .finally(() => setDescLoading(false))
-  }, [book?.id])
+  }, [book])
 
   if (!book) return null
 
@@ -372,7 +377,7 @@ export default function DiscoverScreen() {
         const { blob: b, contentType } = await fetchWithProgress(
           `/api/libgen/fetch?md5=${encodeURIComponent(book.md5)}`, onProgress
         )
-        blob = b; fileType = contentType.includes('pdf') ? 'pdf' : 'epub'
+        blob = b; fileType = await sniffFileType(b, contentType)
       } else {
         const candidates = []
         if (book.epubUrl) candidates.push({ url: book.epubUrl, type: 'epub' })

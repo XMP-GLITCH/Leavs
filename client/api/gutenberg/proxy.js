@@ -39,7 +39,7 @@ export default async function handler(req, res) {
   try {
     const upstream = await fetch(url, {
       headers: {
-        'User-Agent': 'Leavs/1.0 (reading app; contact arreyewube273@gmail.com)',
+        'User-Agent': 'Leavs/1.0 (reading app; +https://github.com/XMP-GLITCH/Leavs)',
         'Accept': 'application/epub+zip, application/octet-stream, */*',
       },
     })

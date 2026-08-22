@@ -1,5 +1,9 @@
 export const config = { maxDuration: 60 }
 
+// The client chunks at 1400 characters. Anything much larger is either a bug
+// or someone burning 60s of function time per request; there is no auth here.
+const MAX_CHARS = 3000
+
 const VALID_VOICES = new Set([
   'en-US-JennyNeural',
   'en-US-GuyNeural',
@@ -15,6 +19,8 @@ export default async function handler(req, res) {
 
   const { text, voice = 'en-US-JennyNeural' } = req.body || {}
   if (!text?.trim()) return res.status(400).json({ error: 'text required' })
+  if (text.length > MAX_CHARS)
+    return res.status(413).json({ error: 'text too long: ' + text.length + ' characters, limit is ' + MAX_CHARS })
 
   const safeVoice = VALID_VOICES.has(voice) ? voice : 'en-US-JennyNeural'
 

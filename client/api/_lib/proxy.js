@@ -12,6 +12,11 @@
 
 const KEY = process.env.SCRAPER_API_KEY
 
+// Anna's Archive sits behind Cloudflare, which a datacenter IP cannot pass
+// unaided. Callers use this to explain an empty result instead of implying
+// the search simply found nothing.
+export const hasScraperKey = () => Boolean(KEY)
+
 export const BROWSER = {
   'User-Agent':                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -88,7 +93,7 @@ async function freeFetch(url) {
 /**
  * Fetch a single URL through the best available tier.
  */
-export async function scrape(url, { extraHeaders = {}, referer = null } = {}) {
+export async function scrape(url, { referer = null } = {}) {
   // Tier 1: direct
   try { return await directFetch(url, referer) } catch { /* try next */ }
 
@@ -107,7 +112,7 @@ export async function scrape(url, { extraHeaders = {}, referer = null } = {}) {
  * Try mirrors in parallel for the fast path, then ScraperAPI on up to 2 mirrors,
  * then free proxy on up to 2 mirrors. Total budget: ~4s + ~40s max = 44s.
  */
-export async function scrapeWithMirrors(mirrors, queryPath, { referer } = {}) {
+export async function scrapeWithMirrors(mirrors, queryPath) {
   // ── Fast path: all mirrors in parallel ──────────────────────────────
   const settled = await Promise.allSettled(
     mirrors.map(m => directFetch(m + queryPath, m + '/'))

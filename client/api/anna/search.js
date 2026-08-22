@@ -1,6 +1,6 @@
 export const config = { maxDuration: 45 }
 
-import { scrapeWithMirrors } from '../_lib/proxy.js'
+import { scrapeWithMirrors, hasScraperKey } from '../_lib/proxy.js'
 
 // Ordered lightest → heaviest Cloudflare protection
 const MIRRORS = [
@@ -38,7 +38,12 @@ export default async function handler(req, res) {
       console.error("[anna] CF block page, first 600 chars:", html.slice(0, 600))
       return res.status(502).json({ error: "Anna's Archive is blocking our request. Try again later." })
     }
-    return res.status(200).json({ books: [] })
+    return res.status(200).json({
+      books: [],
+      ...(hasScraperKey() ? {} : {
+        degraded: "Anna's Archive is behind Cloudflare and cannot be searched from a server without a scraping proxy. Set SCRAPER_API_KEY to enable this source.",
+      }),
+    })
   }
 
   const books = []
@@ -84,6 +89,13 @@ export default async function handler(req, res) {
 
   if (books.length === 0) {
     console.error("[anna] Parsed 0 books. HTML snippet:", html.slice(0, 800))
+    // The page came back and DID contain result markers, so this is our
+    // parser failing on changed markup — not a genuine empty search. Say so:
+    // otherwise the UI reports "no results" and a dead mirror goes unnoticed.
+    return res.status(200).json({
+      books: [],
+      degraded: "Anna's Archive responded, but its results could not be read. A mirror has most likely changed its markup — this is not the same as finding nothing.",
+    })
   }
 
   res.status(200).json({ books })

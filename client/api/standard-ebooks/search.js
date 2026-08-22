@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   try {
     const feed = await fetch('https://standardebooks.org/opds/all', {
       headers: {
-        'User-Agent': 'Leavs/1.0 (reading app; contact arreyewube273@gmail.com)',
+        'User-Agent': 'Leavs/1.0 (reading app; +https://github.com/XMP-GLITCH/Leavs)',
         'Accept': 'application/atom+xml, application/xml, */*',
       },
     })
