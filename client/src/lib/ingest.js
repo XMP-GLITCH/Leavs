@@ -32,6 +32,9 @@ function blobToDataUrl(blob) {
 // ── Chapter detection ────────────────────────────────────────────────────────
 const CH_BREAK = /^(?:chapter|ch\.?|part|section|book)\s+(?:\d+|[ivxlcdm]+)[^\n]*/im
 
+// Below this a section is folded into the previous one rather than standing alone.
+const MIN_CHAPTER_CHARS = 80
+
 function splitChapters(text) {
   const lines  = text.split('\n')
   const breaks = []
@@ -44,11 +47,28 @@ function splitChapters(text) {
     return [{ title: 'Chapter 1', text: body || '[No readable text found in this file. It may be image-based or a scanned document.]' }]
   }
 
-  const chunks = breaks.map((start, idx) => {
-    const end  = breaks[idx + 1] ?? lines.length
-    const body = lines.slice(start + 1, end).join('\n').trim()
-    return { title: lines[start].trim() || `Chapter ${idx + 1}`, text: body }
-  }).filter(ch => ch.text.length > 80)
+  const chunks = []
+
+  // Text before the first heading is real content — a preface, an introduction,
+  // or simply a document whose headings start late. It used to be dropped.
+  const front = lines.slice(0, breaks[0]).join('\n').trim()
+  if (front.length > MIN_CHAPTER_CHARS) chunks.push({ title: 'Front matter', text: front })
+
+  for (let idx = 0; idx < breaks.length; idx++) {
+    const start = breaks[idx]
+    const end   = breaks[idx + 1] ?? lines.length
+    const title = lines[start].trim() || `Chapter ${idx + 1}`
+    const body  = lines.slice(start + 1, end).join('\n').trim()
+
+    // A section too short to stand alone is folded into the previous one,
+    // heading and all. Filtering these out threw the text away entirely — a
+    // contents page or a run of short scenes could vanish from a book.
+    if (body.length <= MIN_CHAPTER_CHARS && chunks.length) {
+      chunks[chunks.length - 1].text += `\n\n${title}` + (body ? `\n\n${body}` : '')
+      continue
+    }
+    chunks.push({ title, text: body })
+  }
 
   return chunks.length
     ? chunks
@@ -63,6 +83,45 @@ async function parseTXT(file) {
 
 // ── PDF ──────────────────────────────────────────────────────────────────────
 const OCR_PAGE_LIMIT = 200  // max pages to OCR in one import
+
+// Turn a pdf.js text-content object into text that keeps its shape.
+//
+// items.map(it => it.str).join(' ') threw away every line break in the
+// document, so a PDF arrived as one continuous run and the reader drew the
+// whole book as a single paragraph. pdf.js flags line ends with hasEOL; the
+// vertical position of each item tells us where a PARAGRAPH ends, since a
+// paragraph gap is markedly larger than normal leading.
+function pageToText(content) {
+  const items = content.items.filter(it => typeof it.str === "string")
+  if (!items.length) return ""
+
+  // Typical line-to-line drop, measured rather than assumed: font sizes vary
+  // between documents and between sections of one document.
+  const drops = []
+  for (let k = 1; k < items.length; k++) {
+    const a = items[k - 1].transform?.[5], b = items[k].transform?.[5]
+    if (a == null || b == null) continue
+    const d = a - b
+    if (d > 0.5) drops.push(d)
+  }
+  drops.sort((x, y) => x - y)
+  const typical = drops.length ? drops[Math.floor(drops.length / 2)] : 0
+
+  let out = ""
+  let prevY = null
+  for (const it of items) {
+    const y = it.transform?.[5]
+    if (prevY != null && y != null) {
+      const drop = prevY - y
+      // Anything appreciably beyond one line of leading reads as a new block.
+      if (typical && drop > typical * 1.6) out += "\n\n"
+    }
+    out += it.str
+    if (it.hasEOL) out += "\n"
+    if (y != null) prevY = y
+  }
+  return out
+}
 
 async function parsePDF(file, onProgress, ctl) {
   onProgress?.('Loading PDF reader…')
@@ -84,7 +143,24 @@ async function parsePDF(file, onProgress, ctl) {
 
   let pdf
   try { pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise }
-  catch (e) { throw new Error(`Step[pdf-open]: ${e.message}`) }
+  catch (e) {
+    // pdf.js throws typed exceptions here. Passing the raw message through
+    // meant a password-protected book and a half-downloaded file produced
+    // the same unhelpful string.
+    if (e?.name === 'PasswordException')
+      throw new Error('This PDF is password-protected. Remove the password (open it and re-save, or print to PDF) and import again.')
+    if (e?.name === 'InvalidPDFException')
+      throw new Error('This file is not a readable PDF. It may be damaged, or the download may have stopped partway.')
+    if (e?.name === 'MissingPDFException')
+      throw new Error('The PDF could not be read — the file appears to be empty.')
+    throw new Error(`Step[pdf-open]: ${e.message}`)
+  }
+
+  // Text extraction is roughly linear in page count, and the default 90s
+  // budget is a flat guess that quietly killed long books partway through —
+  // reported to the reader as "Import timed out", which sounds like a bug.
+  // Phones are several times slower than a laptop here, so budget generously.
+  ctl?.extendTimeout(Math.min(60_000 + pdf.numPages * 600, 900_000))
 
   const meta   = await pdf.getMetadata().catch(() => ({}))
   const title  = meta.info?.Title  || file.name.replace(/\.[^.]+$/, '')
@@ -92,15 +168,22 @@ async function parsePDF(file, onProgress, ctl) {
 
   // ── Step 1: try text layer extraction ──────────────────────────────────────
   const pageTexts = []
+  let failedPages = 0
   for (let p = 1; p <= pdf.numPages; p++) {
     if (ctl?.isCancelled()) throw new Error('Import cancelled')
     if (p % 10 === 0) onProgress?.(`Reading page ${p} of ${pdf.numPages}…`)
     try {
       const page    = await pdf.getPage(p)
       const content = await page.getTextContent()
-      pageTexts.push(content.items.map(it => it.str).join(' '))
-    } catch { pageTexts.push('') }
+      pageTexts.push(pageToText(content))
+    } catch { pageTexts.push(''); failedPages++ }
   }
+
+  // Every single page throwing means the document is structurally broken, not
+  // merely image-based — OCR would render 300 blank canvases and take minutes
+  // to conclude nothing.
+  if (pdf.numPages > 0 && failedPages === pdf.numPages)
+    throw new Error('None of this PDF could be read — every page failed to load. The file is most likely damaged or incomplete.')
 
   const totalChars   = pageTexts.reduce((s, t) => s + t.trim().length, 0)
   const avgCharsPage = pdf.numPages > 0 ? totalChars / pdf.numPages : 0
@@ -161,7 +244,7 @@ async function parsePDF(file, onProgress, ctl) {
       // OCR unavailable (offline or blocked) — store with a clear placeholder
       const msg = e.message?.includes('fetch') || e.message?.includes('network')
         ? '[OCR requires an internet connection on first use to download the language model. Connect and re-import this file.]'
-        : `[This PDF is image-based (scanned). OCR failed: ${e.message}. Try converting it to EPUB or searchable PDF first.]`
+        : `[This PDF is image-based (scanned) and OCR failed: ${e.message}.${failedPages ? ` ${failedPages} of ${pdf.numPages} pages also failed to load.` : ''} Try converting it to EPUB, or to a searchable PDF, first.]`
       return { title, author, cover: null, chapters: [{ title: 'Chapter 1', text: msg }] }
     }
   }
@@ -197,10 +280,29 @@ async function parseDOCX(file, onProgress) {
   catch (e) { throw new Error(`Step[docx-content]: ${e.message}`) }
   if (!docXml) throw new Error('Step[docx-content]: word/document.xml not found — may not be a .docx file')
 
-  const rawTexts = [...docXml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1])
-  const fullText = rawTexts.join(' ')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ').trim()
+  // Extract per PARAGRAPH (<w:p>), not per text run (<w:t>).
+  //
+  // Joining every run into one string and collapsing \s+ to a single space
+  // destroyed the line structure — and splitChapters() finds headings by
+  // scanning lines, so every DOCX imported as a single chapter no matter how
+  // it was written. <w:p\b> deliberately does not match <w:pPr> (properties).
+  const paras = [...docXml.matchAll(/<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g)]
+    .map(([, p]) =>
+      [...p.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)]
+        .map(m => m[1])
+        .join('')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .replace(/[ \t]+/g, ' ')
+        .trim()
+    )
+    .filter(Boolean)
+
+  // Fall back to the old flat extraction if the document uses no <w:p> at all.
+  const fullText = paras.length
+    ? paras.join('\n\n')
+    : [...docXml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1]).join(' ')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ').trim()
 
   if (!fullText || fullText.length < 20)
     return { title, author, cover: null, chapters: [{ title: 'Document', text: '[Could not extract text from this document. It may be image-based or use unsupported formatting.]' }] }
@@ -266,6 +368,35 @@ async function parsePPTX(file, onProgress) {
       ? chapters
       : [{ title: 'Slide 1', text: '[Could not extract text from this presentation. It may be image-based.]' }],
   }
+}
+
+// ── Block-aware text extraction ──────────────────────────────────────────────
+// body.textContent flattens every block element into one run, and collapsing
+// \s+ afterwards destroys what is left. The reader splits paragraphs on
+// \n\n, so the result was an entire book rendered as ONE paragraph — a
+// single <p> holding tens of thousands of word spans.
+//
+// Leaf blocks only (p, headings, li, …): selecting containers too would emit
+// every paragraph twice, once inside its wrapper.
+const LEAF_BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,dd,dt,figcaption'
+
+function blocksToText(root) {
+  const pick = sel => [...root.querySelectorAll(sel)]
+    .map(el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+
+  let parts = pick(LEAF_BLOCKS)
+
+  // Some EPUBs wrap everything in bare <div>s and use no <p> at all. If the
+  // leaf blocks account for well under the document text, fall back to divs.
+  const whole = (root.textContent || '').replace(/\s+/g, ' ').trim()
+  if (parts.join(' ').length < whole.length * 0.5) {
+    const divs = pick('div')
+    if (divs.join(' ').length > parts.join(' ').length) parts = divs
+  }
+
+  // Last resort: no usable blocks, keep the flat text rather than lose it.
+  return parts.length ? parts.join('\n\n') : whole
 }
 
 // ── EPUB cover extraction ─────────────────────────────────────────────────────
@@ -378,10 +509,19 @@ async function parseEPUB(file, onProgress) {
         span.textContent = alt ? ` [image: ${alt}] ` : ' [image] '
         img.replaceWith(span)
       })
-      const text = (doc.body?.textContent ?? '').replace(/\s+/g, ' ').trim()
-      if (text.length < 80) continue
-      const heading = doc.querySelector('h1,h2,h3')?.textContent?.trim()
-      chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
+      const text = doc.body ? blocksToText(doc.body) : ''
+      // Any length threshold here loses real content — 80 discarded one-page
+      // chapters, 20 still discarded "For my mother." Skip only what is
+      // genuinely empty and let the chapter logic fold short pieces together.
+      if (!text.trim()) continue
+      const heading = doc.querySelector('h1,h2,h3')?.textContent?.replace(/\s+/g, ' ').trim()
+      // One spine item frequently holds many chapters — Gutenberg builds its
+      // EPUBs that way, which is why a 61-chapter novel used to import as 15
+      // sections with captions for titles. Now that the text keeps its line
+      // structure, splitChapters can actually find the headings.
+      const inner = splitChapters(text)
+      if (inner.length > 1) chapters.push(...inner)
+      else chapters.push({ title: heading || `Chapter ${chapters.length + 1}`, text })
     } catch { continue }
   }
 
@@ -449,18 +589,30 @@ export async function ingestFile(file, onProgress) {
     } catch (e) { throw new Error(`Step[db-book]: ${e.message}`) }
 
     const total = parsed.chapters.length
-    for (let i = 0; i < total; i++) {
-      const chapterText = parsed.chapters[i].text || '[No text content for this chapter.]'
+    try {
+      for (let i = 0; i < total; i++) {
+        // The parse loops check this and the save loop did not — a timeout
+        // landing here left a book in the library holding only some of its text.
+        if (cancelled) throw new Error('Import cancelled')
+        const chapterText = parsed.chapters[i].text || '[No text content for this chapter.]'
+        try {
+          await db.chapters.add({
+            bookId,
+            index:       i,
+            title:       parsed.chapters[i].title,
+            text:        chapterText,
+            audioStatus: 'none',
+          })
+        } catch (e) { throw new Error(`Step[db-chapter-${i}]: ${e.message}`) }
+        if (i % 5 === 0) onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
+      }
+    } catch (e) {
+      // Roll back rather than leave a partial book that looks importable.
       try {
-        await db.chapters.add({
-          bookId,
-          index:       i,
-          title:       parsed.chapters[i].title,
-          text:        chapterText,
-          audioStatus: 'none',
-        })
-      } catch (e) { throw new Error(`Step[db-chapter-${i}]: ${e.message}`) }
-      if (i % 5 === 0) onProgress?.(`Saving chapter ${i + 1} of ${total}…`)
+        await db.chapters.where('bookId').equals(bookId).delete()
+        await db.books.delete(bookId)
+      } catch { /* best effort — the original failure is what matters */ }
+      throw e
     }
 
     return { bookId, hasCover: !!parsed.cover }
